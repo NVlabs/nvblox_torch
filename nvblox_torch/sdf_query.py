@@ -51,7 +51,7 @@ class SdfSphereBlox(torch.autograd.Function):
             r[:, 3] = 0.0
             r = torch.nan_to_num(r)
             grad_sph = grad_output.unsqueeze(-1) * r
-        return grad_sph, None, None, None
+        return grad_sph, None, None, None, None
 
 
 class SdfSphereCostMultiBlox(torch.autograd.Function):
