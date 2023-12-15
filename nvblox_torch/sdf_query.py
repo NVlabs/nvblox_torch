@@ -49,6 +49,7 @@ class SdfSphereBlox(torch.autograd.Function):
             (r,) = ctx.saved_tensors
             r[:, :3] = r[:, :3] / r[:, 3:4]
             r[:, 3] = 0.0
+            r = torch.nan_to_num(r)
             grad_sph = grad_output.unsqueeze(-1) * r
         return grad_sph, None, None, None
 
