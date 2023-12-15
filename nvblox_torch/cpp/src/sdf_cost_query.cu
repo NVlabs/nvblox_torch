@@ -447,7 +447,7 @@ scale_speed_metric(const float4 &sphere_0_cache, const float4 &sphere_1_cache,
     orth_proj[4] += 1;
     orth_proj[8] += 1;
 
-    // load float3 into array for easier matmul later:export GLOG_minloglevel=2
+    // load float3 into array for easier matmul later
     // two matmuls:
     float orth_pt[3];; // orth_proj(3x3) * max_grad(3x1)
     float orth_curve[3]; // max_dist(1) * orth_proj (3x3) * curvature_vec (3x1)
