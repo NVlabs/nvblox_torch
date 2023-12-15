@@ -21,6 +21,7 @@ else()
     set(CUDA_ARCHITECTURE_FLAGS "-gencode=arch=compute_70,code=sm_70 ")
 endif()
 
+option(BUILD_TESTING "Build tests" OFF)
 
 # This asks include files from nvblox to not provide implementations
 # that cause linking against ABI-incompatible stuff
@@ -53,10 +54,20 @@ set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --expt-relaxed-constexpr --disable-war
 
 set(CUDA_NVCC_FLAGS "${CUDA_NVCC_FLAGS} --compiler-options -fPIC -std=c++14")
 
+############
+# INCLUDES #
+############
 
+# Internal includes
+include_directories(include)
+
+# External includes
 include_directories(${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 include_directories(${GLOG_INCLUDE_DIRS} ${gflags_INCLUDE_DIRS})
 
+#############
+# LIBRARIES #
+#############
 
 ### Nvblox-torch python wrapper
 add_library(py_nvblox SHARED src/py_nvblox.cu src/py_mapper.cu
@@ -64,13 +75,22 @@ add_library(py_nvblox SHARED src/py_nvblox.cu src/py_mapper.cu
 
             target_link_libraries(py_nvblox
 nvblox_lib
-#nvblox_gpu_hash
 nvblox_eigen
-#nvblox_cuda_check
 ${glog_LIBRARIES}
-#glog::glog
 ${TORCH_LIBRARIES}
 ${CUDA_LIBRARIES}
-${CUDA_nvToolsExt_LIBRARY} 
+#${CUDA_nv}
+#${CUDA_nvToolsExt_LIBRARY} 
 )
 set_target_properties(py_nvblox PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+
+#########
+# TESTS #
+#########
+include(CTest)
+
+if(BUILD_TESTING)
+    find_package(GTest REQUIRED)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

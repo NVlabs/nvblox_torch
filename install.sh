@@ -9,4 +9,4 @@
 ## its affiliates is strictly prohibited.
 ##
 
-cd nvblox_torch/cpp && mkdir -p build && cd build && cmake --trace -DCMAKE_PREFIX_PATH="$(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)')" -DCMAKE_CUDA_COMPILER=$(which nvcc) .. && make -j32 && cd ../../../ && python -m pip install -e .
+cd nvblox_torch/cpp && mkdir -p build && cd build && cmake -DCMAKE_PREFIX_PATH="$1" -DCMAKE_CUDA_COMPILER=$(which nvcc) .. && make -j32 && cd ../../../

@@ -8,7 +8,7 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#include "py_scene.h"
+#include "nvblox_torch/py_scene.h"
 
 #include <nvblox/primitives/scene.h>
 

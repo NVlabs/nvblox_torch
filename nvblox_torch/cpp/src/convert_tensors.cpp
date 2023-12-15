@@ -8,7 +8,9 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#include "convert_tensors.h"
+#include "nvblox_torch/convert_tensors.h"
+
+#include <cuda_runtime.h>
 
 #include "nvblox/core/color.h"
 
@@ -37,7 +39,8 @@ nvblox::DepthImage copy_depth_image_from_tensor(torch::Tensor depth_image_t)
     int height = depth_image_t.sizes()[0];
     int width = depth_image_t.sizes()[1];
 
-    nvblox::DepthImage depth_image = nvblox::DepthImage::fromBuffer(height, width, (float*)depth_image_t.data_ptr(), memory_type);
+    nvblox::DepthImage depth_image(memory_type);
+    depth_image.copyFrom(height, width, (float*)depth_image_t.data_ptr());
     return depth_image;
 }
 
@@ -51,7 +54,8 @@ nvblox::ColorImage copy_color_image_from_tensor(torch::Tensor color_image_t)
     assert(channels == 4);
 
     // Color is a class with just 3 members, each a uint8. So it should map over the last axis of the tensor
-    nvblox::ColorImage color_image = nvblox::ColorImage::fromBuffer(height, width, (nvblox::Color*)color_image_t.data_ptr(), memory_type);
+    nvblox::ColorImage color_image(memory_type);
+    color_image.copyFrom(height, width, (nvblox::Color*)color_image_t.data_ptr());
     return color_image;
 }
 
@@ -64,8 +68,7 @@ torch::Tensor copy_depth_image_to_tensor(const nvblox::DepthImage& depth_image)
 
     torch::Tensor depth_image_t = init_depth_image_tensor(height, width, device);
 
-    nvblox::image::copy<float>(height, width, 
-        depth_image.dataConstPtr(), depth_image_t.data_ptr<float>());
+    //depth_image.copyTo(depth_image_t.data_ptr<float>());
 
     return depth_image_t; 
 }
@@ -78,8 +81,7 @@ torch::Tensor copy_color_image_to_tensor(const nvblox::ColorImage& color_image)
 
     torch::Tensor color_image_t = init_color_image_tensor(height, width, device);
 
-    nvblox::image::copy<nvblox::Color>(height, width, 
-        color_image.dataConstPtr(), (nvblox::Color*)color_image_t.data_ptr());
+    //color_image.copyTo(static_cast<nvblox::Color*>(color_image_t.data_ptr()));
 
     return color_image_t; 
 }
@@ -113,9 +115,9 @@ nvblox::Transform copy_transform_from_tensor(torch::Tensor transform_t)
     torch::Tensor transform_t_T = transform_t.transpose(0, 1).contiguous();
 
     nvblox::MemoryType memory_type = memory_type_from_torch_device(transform_t.device().type());
-    nvblox::Transform transform;    
+    nvblox::Transform transform;
 
-    nvblox::image::copy<float>(4, 4, (float*) transform_t_T.data_ptr(), transform.matrix().data());
+    cudaMemcpy(transform.matrix().data(), transform_t_T.data_ptr(), 4 * 4 * sizeof(float), cudaMemcpyDefault);
     return transform;
 }
 

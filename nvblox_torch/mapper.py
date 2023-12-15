@@ -38,12 +38,13 @@ class Mapper:
         self,
         voxel_sizes: List[int],
         integrator_types: List[str],
-        cuda_device_id: int = 0,
+        layer_parameters: List[float] = [2.0],
         free_on_destruction: bool = False,
+        cuda_device_id: int = 0,
     ) -> None:
         # Initialize c_mapper with layers = len(voxel_sizes)
         self._c_mapper = get_nvblox_mapper_class()(
-            voxel_sizes, integrator_types, free_on_destruction
+            voxel_sizes, integrator_types, layer_parameters, free_on_destruction
         )
         self._voxel_sizes = voxel_sizes
         self._integrator_types = integrator_types
@@ -92,6 +93,9 @@ class Mapper:
         assert 0 <= mapper_id < len(self._voxel_sizes)
         self._c_mapper.update_mesh(mapper_id)
         self._c_mapper.output_mesh_ply(mesh_fname, mapper_id)
+    def save_map(self, map_fname, mapper_id):
+        assert 0 <= mapper_id < len(self._voxel_sizes)
+        self._c_mapper.output_blox_map(map_fname, mapper_id)
 
     def render_depth_image(
         self,

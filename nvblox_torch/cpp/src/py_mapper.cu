@@ -8,12 +8,12 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#include "py_mapper.h"
-#include "sdf_query.cuh"
-#include "sdf_cost_query.cuh"
-
 #include <c10/cuda/CUDAStream.h>
 #include <c10/cuda/CUDAGuard.h>
+
+#include "nvblox_torch/py_mapper.h"
+#include "nvblox_torch/sdf_query.cuh"
+#include "nvblox_torch/sdf_cost_query.cuh"
 
 
 
@@ -21,9 +21,12 @@ namespace pynvblox {
 
 
 // declare nvblox variables here:
-Mapper::Mapper(std::vector<double> voxel_size_m, std::vector<std::string> projective_layer_type,
+Mapper::Mapper(std::vector<double> voxel_size_m, 
+std::vector<std::string> projective_layer_type,
+std::vector<double> layer_parameters,
 bool free_on_destruction
 ) {
+  layer_parameters_ = layer_parameters;
 
   free_on_destruct_ = free_on_destruction;
   // Initialize the mapper 
@@ -31,7 +34,7 @@ bool free_on_destruction
   projective_layer_type_ = projective_layer_type;
 
   for (int i=0; i < voxel_size_m.size(); i++) {
-    addMapper(voxel_size_m_[i], projective_layer_type_[i]);
+    addMapper(voxel_size_m_[i], projective_layer_type_[i], layer_parameters);
   }
   // create a gpu buffer that has the voxel_sizes:
   float * voxel_size_cpu_;
@@ -50,7 +53,8 @@ bool free_on_destruction
   updateHashMaps();
 } // initialize with nothing?
 
-void Mapper::addMapper(double voxel_size_m, std::string projective_layer_type)
+void Mapper::addMapper(double voxel_size_m, std::string projective_layer_type,
+std::vector<double> layer_parameters)
 {
   //std::cout << "Setting up mapper." << std::endl;
   nvblox::ProjectiveLayerType layer_type;
@@ -68,9 +72,9 @@ void Mapper::addMapper(double voxel_size_m, std::string projective_layer_type)
 
   // Default parameters
   // TODO: Expose these and other similar parameters to Python side
-  mapper->mesh_integrator().min_weight(2.0f);
+  mapper->mesh_integrator().min_weight(layer_parameters[0]);
   mapper->color_integrator().max_integration_distance_m(10.0f);
-  mapper->esdf_integrator().max_distance_m(2.0f);
+  mapper->esdf_integrator().max_esdf_distance_m(2.0f);
   mapper->esdf_integrator().max_site_distance_vox(1.73);
   //mapper->esdf_integrator().min_weight(2.0f);
 
@@ -173,16 +177,21 @@ void Mapper::clear(long mapper_id) {
   if (mapper_id >= 0) {
     mappers_[mapper_id]->occupancy_layer().clear();
     mappers_[mapper_id]->tsdf_layer().clear();
+    mappers_[mapper_id]->esdf_layer().clear();
+    mappers_[mapper_id]->color_layer().clear();
+    mappers_[mapper_id]->mesh_layer().clear();
   }
   else {
     for (auto & mapper : mappers_) {
     mapper->occupancy_layer().clear();
-    mapper->tsdf_layer().clear();    }
+    mapper->tsdf_layer().clear();    
+     mapper->esdf_layer().clear();
+  mapper->color_layer().clear();
+  mapper->mesh_layer().clear();
+    }
   }
   // TODO: Revive these after PyTorch c++11 ABI wheels are available
-  //mapper_->esdf_layer().clear();
-  //mapper_->color_layer().clear();
-  //mapper_->mesh_layer().clear();
+ 
 }
 
 torch::Tensor Mapper::renderDepthImage(
@@ -345,6 +354,14 @@ bool Mapper::outputMeshPly(std::string mesh_output_path, long mapper_id) {
   return nvblox::io::outputMeshLayerToPly(mapper->mesh_layer(), mesh_output_path.c_str());
 }
 
+bool Mapper::outputBloxMap(std::string blox_output_path, long mapper_id)
+{
+  auto mapper = mappers_[mapper_id];
+  const bool result =  mapper->saveLayerCake(blox_output_path);
+  return result;
+}
+
+
 std::vector<torch::Tensor> Mapper::getMesh(long mapper_id)
 {
   auto mapper = mappers_[mapper_id];
@@ -418,9 +435,9 @@ void Mapper::buildFromScene(c10::intrusive_ptr<Scene> scene, long mapper_id) {
   scene->scene_->generateLayerFromScene<nvblox::TsdfVoxel>(4 * voxel_size, &gt_tsdf);
   mapper->tsdf_layer() = std::move(gt_tsdf);
   // Set the max computed distance to 5 meters.
-  mapper->esdf_integrator().max_distance_m(5.0f);
+  mapper->esdf_integrator().max_esdf_distance_m(5.0f);
   // Generate the ESDF from everything in the TSDF.
-  mapper->generateEsdf();
+  mapper->updateEsdf();
 }
 
 
@@ -607,8 +624,45 @@ std::vector<torch::Tensor> Mapper::querySphereSdfMultiCost(
   int num_blocks = (bnh_spheres + kNumThreads -1) / kNumThreads;
   // Call the kernel.
   
-  
-  pynvblox::sdf::cost::sphereDistanceCostMultiKernel<<<num_blocks, kNumThreads, 0, stream>>>(
+  if (num_mappers == 1)
+  {
+    pynvblox::sdf::cost::sphereDistanceCostMultiKernel_map1<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_, 
+	  batch_size, 
+    horizon,
+    n_spheres,
+    write_grad);
+  }
+  else if (num_mappers == 2)
+  {
+    pynvblox::sdf::cost::sphereDistanceCostMultiKernel_map2<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_, 
+	  batch_size, 
+    horizon,
+    n_spheres,
+    write_grad);
+  }
+  else
+  {
+    pynvblox::sdf::cost::sphereDistanceCostMultiKernel<<<num_blocks, kNumThreads, 0, stream>>>(
     sphere_position_rad.data_ptr<float>(),
     out_distance.data_ptr<float>(),
     out_grad.data_ptr<float>(),
@@ -624,6 +678,9 @@ std::vector<torch::Tensor> Mapper::querySphereSdfMultiCost(
     n_spheres,
     write_grad,
     num_mappers);
+  }
+  
+  
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {out_distance, out_grad, sparsity_idx};
 }
@@ -659,8 +716,11 @@ std::vector<torch::Tensor> Mapper::querySphereTrajectorySdfMultiCost(
   constexpr int kNumThreads = 128;
   int num_blocks = (bnh_spheres + kNumThreads -1) / kNumThreads;
   // Call the kernel.
+  if (num_mappers == 1)
+  {
+
   
-  pynvblox::sdf::cost::sphereTrajectoryDistanceCostMultiKernel<<<num_blocks, kNumThreads, 0, stream>>>(
+  pynvblox::sdf::cost::sphereTrajectoryDistanceCostMultiKernel_map1<<<num_blocks, kNumThreads, 0, stream>>>(
     sphere_position_rad.data_ptr<float>(),
     out_distance.data_ptr<float>(),
     out_grad.data_ptr<float>(),
@@ -677,9 +737,54 @@ std::vector<torch::Tensor> Mapper::querySphereTrajectorySdfMultiCost(
     n_spheres,
     sweep_steps,
     enable_speed_metric,
-    write_grad, 
+    write_grad);
+  }
+  else if (num_mappers == 2)
+  {
+    pynvblox::sdf::cost::sphereTrajectoryDistanceCostMultiKernel_map2<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    speed_dt.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_,
+	  batch_size, 
+    horizon,
+    n_spheres,
+    sweep_steps,
+    enable_speed_metric,
+    write_grad
+    );
+  }
+  else
+  {
+    pynvblox::sdf::cost::sphereTrajectoryDistanceCostMultiKernel<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    speed_dt.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_,
+	  batch_size, 
+    horizon,
+    n_spheres,
+    sweep_steps,
+    enable_speed_metric,
+    write_grad,
     num_mappers
     );
+  }
+  
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return {out_distance, out_grad, sparsity_idx};

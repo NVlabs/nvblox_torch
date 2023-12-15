@@ -161,9 +161,8 @@ class MeshDataset(Dataset):
         )
 
         if save_data_dir is not None:
-            print("Saving MeshDataset in sun3d format for re-use")
             self.save_as_sun3d_dataset(save_data_dir)
-            sys.exit(0)
+            #sys.exit(0)
 
     def save_as_sun3d_dataset(self, output_dir):
         import imageio
@@ -182,7 +181,7 @@ class MeshDataset(Dataset):
 
         for i in range(len(self)):
             data = self[i]
-            rgb = data["rgba"][:, :, :3].detach().cpu().numpy()
+            rgb = data["rgba"][:3, :, :].detach().cpu().permute(1,2,0).numpy()
             depth = data["depth"]
             depth = (depth * 1000).detach().cpu().numpy().astype(np.uint16)
             nvblox_pose = data["pose"]

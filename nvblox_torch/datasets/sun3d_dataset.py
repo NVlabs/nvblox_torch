@@ -43,6 +43,8 @@ class Sun3dDataset(Dataset):
         return len(self.frame_names)
 
     def __getitem__(self, index):
+        """ rgba: 4xHxW, depth HxW
+        """
         frame_name = self.frame_names[index]
         rgb_np = imageio.imread(os.path.join(self.seq_dir, f"{frame_name}.color.png"))
         depth_np = imageio.imread(os.path.join(self.seq_dir, f"{frame_name}.depth.png"))
@@ -50,8 +52,8 @@ class Sun3dDataset(Dataset):
 
         depth_np = depth_np.astype(np.float32) / 1000
 
-        rgb = torch.from_numpy(rgb_np).permute((2, 0, 1))
-        rgba = torch.cat([rgb, torch.ones_like(rgb[0:1, :, :]) * 255], dim=0)
+        rgb = torch.from_numpy(rgb_np)
+        rgba = torch.cat([rgb, torch.ones_like(rgb[:, :, 0:1]) * 255], dim=-1).permute(2,0,1)
         depth = torch.from_numpy(depth_np).float()
         pose = torch.from_numpy(pose_np).float()
 

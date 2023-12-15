@@ -14,16 +14,15 @@ its affiliates is strictly prohibited.
 This package connects [nvblox](https://github.com/nvidia-isaac/nvblox)'s mapping and collision query functions with pytorch. This package 
 supports both mapping a world from a depth camera and also querying the built world for 
 signed distances. Read [nvblox](https://github.com/nvidia-isaac/nvblox) for more information on how 
-nvblox works.
+it works.
 
 Checkout [CuRobo](https://curobo.org) for examples of integrating this package with motion generation
 for manipulators.
 
 For business inquiries, please visit our website and submit the form: [NVIDIA Research Licensing](https://www.nvidia.com/en-us/research/inquiries/)
 
-Use [Discussions](https://github.com/NVlabs/nvblox_torch/discussions) for questions on using this package.
-
-Use [Issues](https://github.com/NVlabs/nvblox_torch/issues) if you find a bug.
+## Updates
+ - December 2023: Updated wrappers to work with nvblox 0.0.5 and added instructions to compile with PRE_CXX11_ABI.
 
 ## Citation
 
@@ -41,66 +40,144 @@ If you found this work useful, please cite the below report,
         }
 ```
 
+
 ## Code Contributors
 
 - Valts Blukis
 - Balakumar Sundaralingam
+- Alexander Millane
+
+## Docker
+We have found docker to be the most stable way to use nvblox_torch. Docker instructions are 
+at [docker_development](https://curobo.org/source/getting_started/5_docker_development.html). The dockerfile is in [curobo_github](https://github.com/NVlabs/curobo/blob/main/docker/x86.dockerfile). 
+There are instructions in the link to use nvblox_torch on NVIDIA Jetson and also with 
+NVIDIA Isaac Sim.
 
 ## Install Instructions
 
-1. Install nvblox with the ABI-compatibility mode
+pyTorch that is available through pip wheels and also with Isaac Sim has been compiled with `D_GLIBCXX_USE_CXX11_ABI=0`. 
+pyTorch that's available through docker containers at [ngc](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch) are compiled with `D_GLIBCXX_USE_CXX11_ABI=1`. You can check what value was used for your pytorch installation with 
+`python -c "import torch; print(torch._C._GLIBCXX_USE_CXX11_ABI)"`. 
+
+### Prequisites:
+
+If you are on Ubuntu older than 20.04:
 
 ```
-git clone https://github.com/valtsblukis/nvblox.git 
-sudo apt-get install -y libgoogle-glog-dev libgtest-dev libgflags-dev python3-dev libsqlite3-dev
-cd /usr/src/googletest && sudo cmake . && sudo cmake --build . --target install
-cd nvblox && cd nvblox && mkdir build && cd build
-cmake .. -DPRE_CXX11_ABI_LINKABLE=ON
-make -j32
-sudo make install
+sudo add-apt-repository ppa:ubuntu-toolchain-r/test
+sudo apt update
+sudo apt install gcc-9 g++-9
+export CC=/usr/bin/gcc-9
+export CXX=/usr/bin/g++-9
 ```
 
-If you get a `thrust` error in esdf_integrator.cu during compilation, you need to recompile nvblox with ABI compatibility.
+### Installation for CXX11_ABI
 
-If you get a C++ standard error, change `CMAKE_CXX_STANDARD` in line 5 of `nvblox_torch/cpp/CMakeLists.txt` to the 
-specific standard from the error. 
+1. Install dependenices
 
-2. Install nvblox_torch in your python environment:
+    ```
+    sudo apt-get install libgoogle-glog-dev libgtest-dev libsqlite3-dev curl tcl libbenchmark-dev
+    ```
+2. Install nvblox
 
-```
-sh install.sh
-```
+    ```
+    git clone https://github.com/valtsblukis/nvblox.git && cd nvblox/nvblox && mkdir build && \
+    cmake .. \
+    -DPRE_CXX11_ABI_LINKABLE=ON -DBUILD_TESTING=OFF \
+    && make -j32 && \
+    sudo make install
+    ```
+
+3. Install this repository
+
+    ```
+    git clone https://github.com/NVlabs/nvblox_torch.git && cd nvblox_torch
+    sh install.sh $(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)')
+    python -m pip install -e .
+    ```
+
+### Installation for PRECXX11_ABI
+
+The below instructions can also be used to install nvblox torch with Isaac Sim. Change all instances of `python` to `omni_python`, 
+where `omni_python` maps to the python shell of your Isaac Sim installation as `alias omni_python='~/.local/share/ov/pkg/isaac_sim-2023.1.0/python.sh'`.
 
 
-## Install with Isaac Sim:
+1. Create environment variable that stores the value of `CXX11_ABI` of pytorch installation:
 
-### Upgrade cmake
+    ```
+    export TORCH_CXX11=0 # change this value (0=False, 1=True) based on python -c "import torch; print(torch._C._GLIBCXX_USE_CXX11_ABI)"
+    ```
 
-  1. `wget https://cmake.org/files/v3.19/cmake-3.19.5.tar.gz`
-  2. `tar -xvzf cmake-3.19.5.tar.gz`
-  3. `sudo apt install build-essential checkinstall zlib1g-dev libssl-dev`
-  4. `cd cmake-3.19.5 && ./bootstrap`
-  5. `make -j8`
-  6. `sudo make install`
+2. Create environment variables that will store the path you want to install nvblox and 
+also the value of CXX11_ABI:
+
+    ```
+    export PKGS_PATH=/home/${USER}/pkgs
+    mkdir -p ${PKGS_PATH}
+    ```
 
 
+3. Update cmake with:
+    ```
+    cd ${PKGS_PATH} && wget https://cmake.org/files/v3.27/cmake-3.27.1.tar.gz && \
+        tar -xvzf cmake-3.27.1.tar.gz && \
+        sudo apt update &&  sudo apt install -y build-essential checkinstall zlib1g-dev libssl-dev && \
+        cd cmake-3.27.1 && ./bootstrap && \
+        make -j8 && \
+        sudo make install
+    ``` 
 
-### Install nvblox
-Install nvblox with:
+4. Install sqlite3:
 
-1. `cmake .. -DPRE_CXX11_ABI_LINKABLE=ON -DCMAKE_CUDA_FLAGS="-gencode=arch=compute_70,code=sm_70" -DCMAKE_CUDA_ARCHITECTURES="70" -DSTDGPU_CUDA_ARCHITECTURE_FLAGS_USER="70" -DBUILD_FOR_ALL_ARCHS=ON`
+    ```
+    cd ${PKGS_PATH} && git clone https://github.com/sqlite/sqlite.git -b version-3.39.4 && \
+        cd ${PKGS_PATH}/sqlite && CFLAGS=-fPIC ./configure --prefix=${PKGS_PATH}/sqlite/install/ && \
+        make -j8 && make install
+    ```
 
-### Install nvblox_torch
+5. Install glog:
+    ```
+    cd ${PKGS_PATH} && git clone https://github.com/google/glog.git -b v0.6.0 && \
+    cd glog && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DCMAKE_INSTALL_PREFIX=${PKGS_PATH}/glog/install/ \
+    -DWITH_GFLAGS=OFF -DWITH_GTEST=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI=${TORCH_CXX11} \
+    && make -j8 && make install
+    ```
 
-`export TORCH_CUDA_ARCH_LIST=7.0+PTX`
+6. Install gflags:
+    ```
+    cd ${PKGS_PATH} && git clone https://github.com/gflags/gflags.git -b v2.2.2 && \
+    cd gflags &&  \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DCMAKE_INSTALL_PREFIX=${PKGS_PATH}/gflags/install/ \
+    -DGFLAGS_BUILD_STATIC_LIBS=ON -DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI=${TORCH_CXX11} \
+    && make -j8 && make install
+    ```
 
-`sh install_isaac_sim.sh $(omni_python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)')`
+7. Install nvblox:
 
-`omni_python -m pip install -e .`
+    ```
+    cd ${PKGS_PATH} &&  git clone https://github.com/valtsblukis/nvblox.git && cd ${PKGS_PATH}/nvblox/nvblox mkdir build && cd build && \
+    cmake ..  -DBUILD_REDISTRIBUTABLE=ON \
+    -DCMAKE_CXX_FLAGS=-D_GLIBCXX_USE_CXX11_ABI=0  -DPRE_CXX11_ABI_LINKABLE=ON \
+    -DSQLITE3_BASE_PATH="${PKGS_PATH}/sqlite/install/" -DGLOG_BASE_PATH="${PKGS_PATH}/glog/install/" \
+    -DGFLAGS_BASE_PATH="${PKGS_PATH}/gflags/install/" -DCMAKE_CUDA_FLAGS=-D_GLIBCXX_USE_CXX11_ABI=0 && \
+    make -j32 && \
+    sudo make install
+    ```
 
-If you get a glog library not found runtime error:
 
-`export LD_LIBRARY_PATH=/usr/local/lib`
+8. Install nvblox_torch in your python environment:
+
+    ```
+    cd ${PKGS_PATH} &&  git clone https://github.com/NVlabs/nvblox_torch.git && cd nvblox_torch
+    sh install.sh $(python -c 'import torch.utils; print(torch.utils.cmake_prefix_path)')
+    python -m pip install -e .
+    ```
+
 
 ## Examples
 To reduce debug printing, use `export GLOG_minloglevel=2`

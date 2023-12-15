@@ -8,15 +8,14 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#pragma once
+#include "nvblox_torch/py_mapper.h"
 
 #include <torch/script.h>
 
 #include <torch/custom_class.h> // This is the file that contains info about torch+class
 #include <ATen/ATen.h>
 
-#include "py_scene.h"
-#include "py_mapper.h"
+#include "nvblox_torch/py_scene.h"
 
 // TODO: Create separate wrapper around the mapper like we did for the scene
 namespace pynvblox {
@@ -35,7 +34,7 @@ TORCH_LIBRARY(pynvblox, m) {
   // TODO: In future, can break this NvBlox up into a Mapper, Renderer, what have you
   // For now, they all wrap a single RgbdMapper, so no reason to break up
   m.class_<Mapper>("Mapper")
-    .def(torch::init<std::vector<double>, std::vector<std::string>, bool>())
+    .def(torch::init<std::vector<double>, std::vector<std::string>, std::vector<double>, bool>())
     // Mapping methods
     .def("integrate_depth", &Mapper::integrateDepth)
     .def("integrate_color", &Mapper::integrateColor)
@@ -63,6 +62,7 @@ TORCH_LIBRARY(pynvblox, m) {
     .def("get_mesh", &Mapper::getMesh)
     // Attributes
     .def("build_from_scene", &Mapper::buildFromScene)
+    .def("output_blox_map", &Mapper::outputBloxMap)
     ;
 }
 

@@ -8,7 +8,7 @@
  * without an express license agreement from NVIDIA CORPORATION or
  * its affiliates is strictly prohibited.
  */
-#include "sdf_query.cuh"
+#include "nvblox_torch/sdf_query.cuh"
 
 #include <c10/cuda/CUDAStream.h>
 #include <iostream>
