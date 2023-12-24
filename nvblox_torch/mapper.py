@@ -77,9 +77,9 @@ class Mapper:
 
     def decay_occupancy(self, mapper_id=-1):
         assert -1 <= mapper_id < len(self._voxel_sizes)
-        assert (
-            self._integrator_types[mapper_id] == "occupancy"
-        ), "Only occupancy integrator supports occupancy decay"
+        # assert (
+        #    self._integrator_types[mapper_id] == "occupancy"
+        # ), "Only occupancy integrator supports occupancy decay"
         self._c_mapper.decay_occupancy(mapper_id)
 
     def update_hashmaps(self):
