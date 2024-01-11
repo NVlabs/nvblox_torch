@@ -697,7 +697,9 @@ std::vector<torch::Tensor> Mapper::querySphereTrajectorySdfMultiCost(
     const torch::Tensor blox_pose,
     const torch::Tensor blox_enable,
     const int64_t batch_size, const int64_t horizon, 
-    const int64_t n_spheres, const int64_t sweep_steps, const bool enable_speed_metric, const bool write_grad) 
+    const int64_t n_spheres, const int64_t sweep_steps, const bool enable_speed_metric, 
+    const bool write_grad,
+    const bool use_experimental) 
   {
   assert(hash_init_);
   assert(hash_update_);
@@ -715,10 +717,14 @@ std::vector<torch::Tensor> Mapper::querySphereTrajectorySdfMultiCost(
 
   constexpr int kNumThreads = 128;
   int num_blocks = (bnh_spheres + kNumThreads -1) / kNumThreads;
-  // Call the kernel.
+
+  if (sweep_steps <= 1 || !use_experimental)
+  {
+    // Call the kernel.
   if (num_mappers == 1)
   {
 
+  
   
   pynvblox::sdf::cost::sphereTrajectoryDistanceCostMultiKernel_map1<<<num_blocks, kNumThreads, 0, stream>>>(
     sphere_position_rad.data_ptr<float>(),
@@ -741,6 +747,7 @@ std::vector<torch::Tensor> Mapper::querySphereTrajectorySdfMultiCost(
   }
   else if (num_mappers == 2)
   {
+   
     pynvblox::sdf::cost::sphereTrajectoryDistanceCostMultiKernel_map2<<<num_blocks, kNumThreads, 0, stream>>>(
     sphere_position_rad.data_ptr<float>(),
     out_distance.data_ptr<float>(),
@@ -781,9 +788,86 @@ std::vector<torch::Tensor> Mapper::querySphereTrajectorySdfMultiCost(
     sweep_steps,
     enable_speed_metric,
     write_grad,
-    num_mappers
-    );
+    num_mappers);
+    
   }
+  }
+
+  else
+  {
+    // Call the kernel.
+  if (num_mappers == 1)
+  {
+
+  
+  pynvblox::sdf::cost::sphereSweptTrajectoryDistanceCostMultiKernel_map1<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    speed_dt.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_,
+	  batch_size, 
+    horizon,
+    n_spheres,
+    sweep_steps,
+    enable_speed_metric,
+    write_grad);
+ 
+  }
+  else if (num_mappers == 2)
+  {
+    pynvblox::sdf::cost::sphereSweptTrajectoryDistanceCostMultiKernel_map2<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    speed_dt.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_,
+	  batch_size, 
+    horizon,
+    n_spheres,
+    sweep_steps,
+    enable_speed_metric,
+    write_grad);
+    
+  }
+  else
+  {
+    pynvblox::sdf::cost::sphereSweptTrajectoryDistanceCostMultiKernel<<<num_blocks, kNumThreads, 0, stream>>>(
+    sphere_position_rad.data_ptr<float>(),
+    out_distance.data_ptr<float>(),
+    out_grad.data_ptr<float>(),
+    sparsity_idx.data_ptr<uint8_t>(),
+    weight.data_ptr<float>(),
+    activation_distance.data_ptr<float>(),
+    speed_dt.data_ptr<float>(),
+    cuda_hashes_,
+    blox_pose.data_ptr<float>(),
+    blox_enable.data_ptr<uint8_t>(),
+    voxel_size_m_gpu_,
+	  batch_size, 
+    horizon,
+    n_spheres,
+    sweep_steps,
+    enable_speed_metric,
+    write_grad,
+    num_mappers);
+   
+  }
+  }
+  
+  
   
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 

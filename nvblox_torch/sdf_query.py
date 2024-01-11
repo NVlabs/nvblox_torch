@@ -116,6 +116,7 @@ class SdfSphereTrajectoryCostMultiBlox(torch.autograd.Function):
         sweep_steps=0,
         enable_speed_metric=False,
         return_loss=False,
+        use_experimental=False,
     ):
         b, n, h, _ = sphere_position_rad.shape
         r = c_mapper.query_sphere_trajectory_sdf_cost(
@@ -134,6 +135,7 @@ class SdfSphereTrajectoryCostMultiBlox(torch.autograd.Function):
             sweep_steps,
             enable_speed_metric,
             sphere_position_rad.requires_grad,
+            use_experimental,
         )
         distance = r[0]
         ctx.return_loss = return_loss
@@ -149,6 +151,8 @@ class SdfSphereTrajectoryCostMultiBlox(torch.autograd.Function):
                 grad_sph = grad_sph * grad_output
         return (
             grad_sph,
+            None,
+            None,
             None,
             None,
             None,

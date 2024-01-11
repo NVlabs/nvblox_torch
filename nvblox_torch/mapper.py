@@ -93,6 +93,7 @@ class Mapper:
         assert 0 <= mapper_id < len(self._voxel_sizes)
         self._c_mapper.update_mesh(mapper_id)
         self._c_mapper.output_mesh_ply(mesh_fname, mapper_id)
+
     def save_map(self, map_fname, mapper_id):
         assert 0 <= mapper_id < len(self._voxel_sizes)
         self._c_mapper.output_blox_map(map_fname, mapper_id)
@@ -234,6 +235,8 @@ class Mapper:
         blox_enable: torch.Tensor,
         sweep_steps: int = 0,
         enable_speed_metric: bool = False,
+        return_loss: bool = False,
+        use_experimental: bool = False,
     ):
         distance = SdfSphereTrajectoryCostMultiBlox.apply(
             sphere_position_rad,
@@ -248,6 +251,8 @@ class Mapper:
             blox_enable,
             sweep_steps,
             enable_speed_metric,
+            return_loss,
+            use_experimental,
         )
         return distance
 

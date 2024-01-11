@@ -136,6 +136,39 @@ namespace pynvblox {
 	const int sweep_steps, const bool enable_speed_metric, 
 	const bool write_grad,
 	const int num_mappers);
+
+
+	__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map1(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+	const uint8_t *blox_enable,
+    const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad);
+
+	__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map2(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+	const uint8_t *blox_enable,
+    const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad);
 }
 	
 }

@@ -146,7 +146,8 @@ struct Mapper : torch::CustomClassHolder {
     const torch::Tensor blox_pose,
     const torch::Tensor blox_enable,
     const int64_t batch_size, const int64_t horizon, 
-    const int64_t n_spheres, const int64_t sweep_steps, const bool enable_speed_metric, const bool write_grad);
+    const int64_t n_spheres, const int64_t sweep_steps, const bool enable_speed_metric, const bool write_grad,
+    const bool use_experimental);
   
   bool outputMeshPly(std::string mesh_output_path, long mapper_id=0);
   bool outputBloxMap(std::string blox_output_path, long mapper_id=0);

@@ -977,7 +977,7 @@ const int b_addrs =
 if (h_idx > 0) {
     sphere_0_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     float sphere_0_distance = sphere_distance(sphere_0_cache, sphere_cache);
     if (sphere_0_distance > 0.0)
   {
@@ -988,7 +988,7 @@ if (h_idx > 0) {
   if (h_idx < horizon - 1) {
     sphere_2_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     float sphere_2_distance = sphere_distance(sphere_2_cache, sphere_cache);
     if(sphere_2_distance>0.0)
     {
@@ -1143,7 +1143,7 @@ const int b_addrs =
 if (h_idx > 0) {
     sphere_0_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     float sphere_0_distance = sphere_distance(sphere_0_cache, sphere_cache);
     if (sphere_0_distance > 0.0)
   {
@@ -1154,7 +1154,7 @@ if (h_idx > 0) {
   if (h_idx < horizon - 1) {
     sphere_2_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     float sphere_2_distance = sphere_distance(sphere_2_cache, sphere_cache);
     if(sphere_2_distance>0.0)
     {
@@ -1309,7 +1309,7 @@ const int b_addrs =
 if (h_idx > 0) {
     sphere_0_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     float sphere_0_distance = sphere_distance(sphere_0_cache, sphere_cache);
     if (sphere_0_distance > 0.0)
   {
@@ -1320,7 +1320,7 @@ if (h_idx > 0) {
   if (h_idx < horizon - 1) {
     sphere_2_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     float sphere_2_distance = sphere_distance(sphere_2_cache, sphere_cache);
     if(sphere_2_distance>0.0)
     {
@@ -1402,7 +1402,7 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
   {
     sphere_0_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     sphere_0_cache.w += eta;
     sphere_0_distance = sphere_distance(sphere_0_cache, sphere_1_cache);
     sphere_0_len = sphere_0_distance + sphere_0_cache.w * 2;
@@ -1415,7 +1415,7 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
   {
     sphere_2_cache =
         *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   sph_idx * 4];
+                                   lsph_idx * 4];
     sphere_2_cache.w += eta;
     sphere_2_distance = sphere_distance(sphere_2_cache, sphere_1_cache);
     sphere_2_len = sphere_2_distance + sphere_2_cache.w * 2;
@@ -1616,9 +1616,541 @@ if(enable_speed_metric)
 }
 
 
+__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map1(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad)
+{
+  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int b_idx = t_idx / (horizon * nspheres);
+  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
+  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
+  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
+    return;
+  }
+  const int num_mappers = 1;
+  const int sph_idx =
+      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
+
+  const float eta = activation_distance[0];
+  
+  // Load sphere_pos_rad input
+  float4 sphere_1_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
+  if (sphere_1_cache.w < 0.0) {
+    return;
+  }
+  sphere_1_cache.w += eta;
+
+  const int sw_steps = sweep_steps;
+  const float fl_sw_steps = sw_steps;
+
+  bool sweep_back = false;
+  bool sweep_fwd = false;
+  float4 sphere_0_cache, sphere_2_cache;
+  float signed_distance = 0.0;
+  float sphere_0_distance, sphere_2_distance, sphere_0_len, sphere_2_len;
+
+  const int b_addrs =
+        b_idx * horizon * nspheres; 
+
+  if (h_idx > 0) 
+  {
+    sphere_0_cache =
+        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
+                                   lsph_idx * 4];
+    sphere_0_cache.w += eta;
+    sphere_0_distance = sphere_distance(sphere_0_cache, sphere_1_cache);
+    sphere_0_len = sphere_0_distance + sphere_0_cache.w * 2;
+    if (sphere_0_distance > 0.0) {
+      sweep_back = true;
+    }
+  }
+
+  if (h_idx < horizon - 1) 
+  {
+    sphere_2_cache =
+        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
+                                   lsph_idx * 4];
+    sphere_2_cache.w += eta;
+    sphere_2_distance = sphere_distance(sphere_2_cache, sphere_1_cache);
+    sphere_2_len = sphere_2_distance + sphere_2_cache.w * 2;
+    if (sphere_2_distance > 0.0) {
+      sweep_fwd = true;
+    }
+  }
+    
+
+  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
+
+  float4 loc_sphere_0, loc_sphere_1, loc_sphere_2;
+  float k0 = 0.0;
+
+
+
+  float radius = sphere_1_cache.w;
+
+
+  constexpr int kNumVoxelsPerBlock = 8;
+  
+  nvblox::Vector3f query_location;
+
+  // read data into vector3f:
+  float max_distance = 0.0f;
+  
+  float3 global_grad = make_float3(0,0,0);
+
+  float4 obb_quat = make_float4(0.0);
+  float3 obb_pos = make_float3(0.0);
+
+  #pragma unroll 1
+  for(int m = 0; m<num_mappers; m++)
+  {
+    if (blox_enable[m] == 0)
+    {
+      continue;
+    }
+    signed_distance = 0.0;
+    const float block_size = block_sizes[m];
+    const float voxel_size = block_size / kNumVoxelsPerBlock;
+
+    load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
+    transform_sphere_quat(obb_pos, obb_quat, sphere_1_cache,
+                          loc_sphere_1);
+
+    // transform sphere to nvblox base frame:
+
+    float curr_jump_distance = 0.0;
+    float4 sum_grad = make_float4(0.0, 0.0, 0.0, 0.0);
+
+
+
+
+    query_location(0) = loc_sphere_1.x;
+    query_location(1) = loc_sphere_1.y;
+    query_location(2) = loc_sphere_1.z;
+    
+    // Get the correct block from the hash.
+    nvblox::EsdfVoxel* esdf_voxel;
+    if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+        !esdf_voxel->observed) {
+      // This voxel is outside of the map or not observed. 
+      curr_jump_distance = loc_sphere_1.w;// jump by sphere radius
+    } 
+    else 
+    {
+
+      compute_voxel_distance_grad(esdf_voxel, sum_grad, 
+      signed_distance,
+      loc_sphere_1, eta, voxel_size, hashes[m], block_size);
+      // update jump distance:
+      curr_jump_distance = fabsf(signed_distance);
+    }
+
+    const float jump_mid_distance = curr_jump_distance;
+    float4 t_grad = make_float4(0.0, 0.0, 0.0, 0.0);
+
+    if (sweep_back && jump_mid_distance < sphere_0_distance/2)
+    {
+
+      transform_sphere_quat(obb_pos, obb_quat, sphere_0_cache, loc_sphere_0);
+      for(int j=0; j<sw_steps; j++)
+      {
+        signed_distance = 0.0;
+
+        if(curr_jump_distance >= (sphere_0_len/2)) {
+          break;
+        }
+        k0 = 1 - (curr_jump_distance/sphere_0_len);
+        // compute collision
+        const float4 interpolated_sphere =
+        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_0;
+        query_location(0) = interpolated_sphere.x;
+        query_location(1) = interpolated_sphere.y;
+        query_location(2) = interpolated_sphere.z;
+        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+            !esdf_voxel->observed) {
+          // This voxel is outside of the map or not observed. 
+          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
+        } 
+        else 
+        {
+
+          compute_voxel_distance_grad(esdf_voxel, t_grad, 
+          signed_distance,
+          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
+          // update jump distance:
+          curr_jump_distance += fabsf(signed_distance);
+          sum_grad += t_grad;
+        }
+
+
+      }
+    }
+    if(sweep_fwd && jump_mid_distance < (sphere_2_len / 2))
+    {
+      curr_jump_distance = jump_mid_distance;
+      transform_sphere_quat(obb_pos, obb_quat, sphere_2_cache, loc_sphere_2);
+      for(int j=0; j< sw_steps; j++)
+      {
+        if (curr_jump_distance >= (sphere_2_len)/2)
+        {
+          break;
+        }
+        k0 = 1 - (curr_jump_distance/sphere_2_len);
+        // compute collision
+        const float4 interpolated_sphere =
+        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_2;
+        query_location(0) = interpolated_sphere.x;
+        query_location(1) = interpolated_sphere.y;
+        query_location(2) = interpolated_sphere.z;
+        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+            !esdf_voxel->observed) {
+          // This voxel is outside of the map or not observed. 
+          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
+        } 
+        else 
+        {
+
+          compute_voxel_distance_grad(esdf_voxel, t_grad, 
+          signed_distance,
+          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
+          // update jump distance:
+          curr_jump_distance += fabsf(signed_distance);
+          sum_grad += t_grad;
+        }
+      }
+    }
+
+    if (sum_grad.w > 0.0)
+    {
+      max_distance += sum_grad.w;
+
+      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
+    }
+  
+    
+  }
+
+
+  // sparsity opt:
+if (max_distance == 0) {
+    if (sparsity_idx[sph_idx] == 0) {
+      return;
+    }
+    sparsity_idx[sph_idx] = 0;
+    if (write_grad) {
+      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
+    }
+    out_distance[sph_idx] = 0.0;
+    return;
+}
+if(enable_speed_metric)
+{
+
+
+ if (sweep_back && sweep_fwd) {
+    const float dt = speed_dt[0];
+
+    scale_speed_metric(sphere_0_cache, sphere_1_cache, sphere_2_cache, dt,
+                       write_grad, max_distance, global_grad);
+  }
 
 }
+
+  // else max_dist != 0
+  max_distance = weight[0] * max_distance;
+
+  if (write_grad) {
+    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
+  }
+  out_distance[sph_idx] = max_distance;
+  sparsity_idx[sph_idx] = 1;
+
+}
+
+
+__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map2(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad)
+{
+  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int b_idx = t_idx / (horizon * nspheres);
+  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
+  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
+  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
+    return;
+  }
+  const int num_mappers = 2;
+  const int sph_idx =
+      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
+
+  const float eta = activation_distance[0];
   
+  // Load sphere_pos_rad input
+  float4 sphere_1_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
+  if (sphere_1_cache.w < 0.0) {
+    return;
+  }
+  sphere_1_cache.w += eta;
+
+  const int sw_steps = sweep_steps;
+  const float fl_sw_steps = sw_steps;
+
+  bool sweep_back = false;
+  bool sweep_fwd = false;
+  float4 sphere_0_cache, sphere_2_cache;
+  float signed_distance = 0.0;
+  float sphere_0_distance, sphere_2_distance, sphere_0_len, sphere_2_len;
+
+  const int b_addrs =
+        b_idx * horizon * nspheres; 
+
+  if (h_idx > 0) 
+  {
+    sphere_0_cache =
+        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
+                                   lsph_idx * 4];
+    sphere_0_cache.w += eta;
+    sphere_0_distance = sphere_distance(sphere_0_cache, sphere_1_cache);
+    sphere_0_len = sphere_0_distance + sphere_0_cache.w * 2;
+    if (sphere_0_distance > 0.0) {
+      sweep_back = true;
+    }
+  }
+
+  if (h_idx < horizon - 1) 
+  {
+    sphere_2_cache =
+        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
+                                   lsph_idx * 4];
+    sphere_2_cache.w += eta;
+    sphere_2_distance = sphere_distance(sphere_2_cache, sphere_1_cache);
+    sphere_2_len = sphere_2_distance + sphere_2_cache.w * 2;
+    if (sphere_2_distance > 0.0) {
+      sweep_fwd = true;
+    }
+  }
+    
+
+  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
+
+  float4 loc_sphere_0, loc_sphere_1, loc_sphere_2;
+  float k0 = 0.0;
+
+
+
+  float radius = sphere_1_cache.w;
+
+
+  constexpr int kNumVoxelsPerBlock = 8;
+  
+  nvblox::Vector3f query_location;
+
+  // read data into vector3f:
+  float max_distance = 0.0f;
+  
+  float3 global_grad = make_float3(0,0,0);
+
+  float4 obb_quat = make_float4(0.0);
+  float3 obb_pos = make_float3(0.0);
+
+  #pragma unroll 2
+  for(int m = 0; m<num_mappers; m++)
+  {
+    if (blox_enable[m] == 0)
+    {
+      continue;
+    }
+    signed_distance = 0.0;
+    const float block_size = block_sizes[m];
+    const float voxel_size = block_size / kNumVoxelsPerBlock;
+
+    load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
+    transform_sphere_quat(obb_pos, obb_quat, sphere_1_cache,
+                          loc_sphere_1);
+
+    // transform sphere to nvblox base frame:
+
+    float curr_jump_distance = 0.0;
+    float4 sum_grad = make_float4(0.0, 0.0, 0.0, 0.0);
+
+
+
+
+    query_location(0) = loc_sphere_1.x;
+    query_location(1) = loc_sphere_1.y;
+    query_location(2) = loc_sphere_1.z;
+    
+    // Get the correct block from the hash.
+    nvblox::EsdfVoxel* esdf_voxel;
+    if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+        !esdf_voxel->observed) {
+      // This voxel is outside of the map or not observed. 
+      curr_jump_distance = loc_sphere_1.w;// jump by sphere radius
+    } 
+    else 
+    {
+
+      compute_voxel_distance_grad(esdf_voxel, sum_grad, 
+      signed_distance,
+      loc_sphere_1, eta, voxel_size, hashes[m], block_size);
+      // update jump distance:
+      curr_jump_distance = fabsf(signed_distance);
+    }
+
+    const float jump_mid_distance = curr_jump_distance;
+    float4 t_grad = make_float4(0.0, 0.0, 0.0, 0.0);
+
+    if (sweep_back && jump_mid_distance < sphere_0_distance/2)
+    {
+
+      transform_sphere_quat(obb_pos, obb_quat, sphere_0_cache, loc_sphere_0);
+      for(int j=0; j<sw_steps; j++)
+      {
+        signed_distance = 0.0;
+
+        if(curr_jump_distance >= (sphere_0_len/2)) {
+          break;
+        }
+        k0 = 1 - (curr_jump_distance/sphere_0_len);
+        // compute collision
+        const float4 interpolated_sphere =
+        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_0;
+        query_location(0) = interpolated_sphere.x;
+        query_location(1) = interpolated_sphere.y;
+        query_location(2) = interpolated_sphere.z;
+        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+            !esdf_voxel->observed) {
+          // This voxel is outside of the map or not observed. 
+          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
+        } 
+        else 
+        {
+
+          compute_voxel_distance_grad(esdf_voxel, t_grad, 
+          signed_distance,
+          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
+          // update jump distance:
+          curr_jump_distance += fabsf(signed_distance);
+          sum_grad += t_grad;
+        }
+
+
+      }
+    }
+    if(sweep_fwd && jump_mid_distance < (sphere_2_len / 2))
+    {
+      curr_jump_distance = jump_mid_distance;
+      transform_sphere_quat(obb_pos, obb_quat, sphere_2_cache, loc_sphere_2);
+      for(int j=0; j< sw_steps; j++)
+      {
+        if (curr_jump_distance >= (sphere_2_len)/2)
+        {
+          break;
+        }
+        k0 = 1 - (curr_jump_distance/sphere_2_len);
+        // compute collision
+        const float4 interpolated_sphere =
+        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_2;
+        query_location(0) = interpolated_sphere.x;
+        query_location(1) = interpolated_sphere.y;
+        query_location(2) = interpolated_sphere.z;
+        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+            !esdf_voxel->observed) {
+          // This voxel is outside of the map or not observed. 
+          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
+        } 
+        else 
+        {
+
+          compute_voxel_distance_grad(esdf_voxel, t_grad, 
+          signed_distance,
+          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
+          // update jump distance:
+          curr_jump_distance += fabsf(signed_distance);
+          sum_grad += t_grad;
+        }
+      }
+    }
+
+    if (sum_grad.w > 0.0)
+    {
+      max_distance += sum_grad.w;
+
+      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
+    }
+  
+    
+  }
+
+
+  // sparsity opt:
+if (max_distance == 0) {
+    if (sparsity_idx[sph_idx] == 0) {
+      return;
+    }
+    sparsity_idx[sph_idx] = 0;
+    if (write_grad) {
+      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
+    }
+    out_distance[sph_idx] = 0.0;
+    return;
+}
+if(enable_speed_metric)
+{
+
+
+ if (sweep_back && sweep_fwd) {
+    const float dt = speed_dt[0];
+
+    scale_speed_metric(sphere_0_cache, sphere_1_cache, sphere_2_cache, dt,
+                       write_grad, max_distance, global_grad);
+  }
+
+}
+
+  // else max_dist != 0
+  max_distance = weight[0] * max_distance;
+
+  if (write_grad) {
+    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
+  }
+  out_distance[sph_idx] = max_distance;
+  sparsity_idx[sph_idx] = 1;
+
+}
+
+}
+
 }
 
 }
