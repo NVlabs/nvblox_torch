@@ -8,16 +8,6 @@
 # without an express license agreement from NVIDIA CORPORATION or
 # its affiliates is strictly prohibited.
 #
-from setuptools import find_packages, setup
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+from setuptools import setup
 
-setup(
-    name="nvblox_torch",
-    packages=["nvblox_torch"],
-    cmdclass={"build_ext": BuildExtension},
-    include_package_data=True,
-    install_requires=[
-        "pyrender",
-        "scikit-image",
-    ],
-)
+setup()

@@ -71,9 +71,7 @@ class Mapper:
     def full_update(self, depth_frame, color_frame, pose, intrinsics, mapper_id):
         assert 0 <= mapper_id < len(self._voxel_sizes)
         intrinsics = intrinsics.to("cpu")
-        self._c_mapper.full_update(
-            depth_frame, color_frame, pose, intrinsics, mapper_id
-        )
+        self._c_mapper.full_update(depth_frame, color_frame, pose, intrinsics, mapper_id)
 
     def decay_occupancy(self, mapper_id=-1):
         assert -1 <= mapper_id < len(self._voxel_sizes)

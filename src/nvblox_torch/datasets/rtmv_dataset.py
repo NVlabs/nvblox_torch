@@ -23,23 +23,11 @@ class RtmvDataset(Dataset):
         super().__init__()
         self.root = root
         self.frame_names = list(
-            sorted(
-                set(
-                    [
-                        f.split(".")[0]
-                        for f in os.listdir(self.root)
-                        if "combined" not in f
-                    ]
-                )
-            )
+            sorted(set([f.split(".")[0] for f in os.listdir(self.root) if "combined" not in f]))
         )
-        self.json_files = [
-            os.path.join(self.root, f"{f}.json") for f in self.frame_names
-        ]
+        self.json_files = [os.path.join(self.root, f"{f}.json") for f in self.frame_names]
         self.rgb_files = [os.path.join(self.root, f"{f}.png") for f in self.frame_names]
-        self.depth_files = [
-            os.path.join(self.root, f"{f}.depth.png") for f in self.frame_names
-        ]
+        self.depth_files = [os.path.join(self.root, f"{f}.depth.png") for f in self.frame_names]
 
     def load_json(self, json_file):
         with open(json_file, "r") as fp:

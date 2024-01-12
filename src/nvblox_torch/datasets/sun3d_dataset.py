@@ -25,19 +25,11 @@ class Sun3dDataset(Dataset):
         cam_intrinsics_np = np.loadtxt(os.path.join(self.root, "camera-intrinsics.txt"))
         self.camera_intrinsics = torch.from_numpy(cam_intrinsics_np).float()
         self.sequence_name = list(
-            sorted(
-                [
-                    d
-                    for d in os.listdir(self.root)
-                    if os.path.isdir(os.path.join(self.root, d))
-                ]
-            )
+            sorted([d for d in os.listdir(self.root) if os.path.isdir(os.path.join(self.root, d))])
         )[0]
         self.seq_dir = os.path.join(self.root, self.sequence_name)
 
-        self.frame_names = list(
-            sorted(set([f.split(".")[0] for f in os.listdir(self.seq_dir)]))
-        )
+        self.frame_names = list(sorted(set([f.split(".")[0] for f in os.listdir(self.seq_dir)])))
 
     def __len__(self):
         return len(self.frame_names)
@@ -52,9 +44,7 @@ class Sun3dDataset(Dataset):
         depth_np = depth_np.astype(np.float32) / 1000
 
         rgb = torch.from_numpy(rgb_np)
-        rgba = torch.cat([rgb, torch.ones_like(rgb[:, :, 0:1]) * 255], dim=-1).permute(
-            2, 0, 1
-        )
+        rgba = torch.cat([rgb, torch.ones_like(rgb[:, :, 0:1]) * 255], dim=-1).permute(2, 0, 1)
         depth = torch.from_numpy(depth_np).float()
         pose = torch.from_numpy(pose_np).float()
 

@@ -1,3 +1,2 @@
-prune nvblox_torch/datasets
 prune nvblox_torch/cpp
 include nvblox_torch/cpp/build/libpy_nvblox.so
