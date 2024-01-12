@@ -9,4 +9,4 @@
 ## its affiliates is strictly prohibited.
 ##
 
-cd nvblox_torch/cpp && mkdir -p build && cd build && cmake -DCMAKE_PREFIX_PATH="$1" -DCMAKE_CUDA_COMPILER=$(which nvcc) .. && make -j32 && cd ../../../
+cd src/nvblox_torch/cpp && mkdir -p build && cd build && cmake -DCMAKE_PREFIX_PATH="$1" -DCMAKE_CUDA_COMPILER=$(which nvcc) .. && make -j32 && cd ../../../../
