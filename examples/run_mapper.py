@@ -151,9 +151,7 @@ if __name__ == "__main__":
             timer.start("update")
             mapper.add_depth_frame(static_depth, pose, intrinsics, mapper_id=0)
             mapper.add_depth_frame(dynamic_depth, pose, intrinsics, mapper_id=1)
-            if (
-                frame_num + 1
-            ) % args.update_color_every_n == 0 and args.update_color_every_n > 0:
+            if (frame_num + 1) % args.update_color_every_n == 0 and args.update_color_every_n > 0:
                 # Not sure if this rgba splitting is needed
                 # static_rgba, dynamic_rgba = rgba.clone(), rgba.clone()
                 # static_rgba[dynamic_mask][:, 3] = 0
@@ -173,24 +171,16 @@ if __name__ == "__main__":
         else:
             timer.start("update")
             mapper.add_depth_frame(depth, pose, intrinsics, mapper_id)
-            if (
-                frame_num + 1
-            ) % args.update_color_every_n == 0 and args.update_color_every_n > 0:
+            if (frame_num + 1) % args.update_color_every_n == 0 and args.update_color_every_n > 0:
                 mapper.add_color_frame(rgba, pose, intrinsics, mapper_id)
 
         # Update ESDF on both mappers
-        if (
-            frame_num + 1
-        ) % args.update_esdf_every_n == 0 and args.update_esdf_every_n > 0:
+        if (frame_num + 1) % args.update_esdf_every_n == 0 and args.update_esdf_every_n > 0:
             mapper.update_esdf(-1)
         # UpdateMesh no longer works. Wait for PyTorch with C++11 ABI
-        if (
-            frame_num + 1
-        ) % args.update_mesh_every_n == 0 and args.update_mesh_every_n > 0:
+        if (frame_num + 1) % args.update_mesh_every_n == 0 and args.update_mesh_every_n > 0:
             mapper.update_mesh(-1)
-        if (
-            frame_num + 1
-        ) % args.decay_occupancy_every_n == 0 and args.decay_occupancy_every_n > 0:
+        if (frame_num + 1) % args.decay_occupancy_every_n == 0 and args.decay_occupancy_every_n > 0:
             # Occupancy decay only applies to the occupancy mapper with id=1
             mapper.decay_occupancy(mapper_id=1)
 

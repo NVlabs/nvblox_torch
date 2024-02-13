@@ -44,9 +44,7 @@ def get_global_pose(device="cuda"):
 def get_intrinsics(h_fov, height, width, device="cuda"):
     fx = width / (2 * math.tan(math.radians(h_fov) / 2))
     fy = fx  # square pixels
-    return torch.tensor(
-        [[fx, 0, width / 2], [0, fy, height / 2], [0, 0, 1]], device=device
-    )
+    return torch.tensor([[fx, 0, width / 2], [0, fy, height / 2], [0, 0, 1]], device=device)
 
 
 def create_dummy_map():

@@ -81,12 +81,16 @@ std::vector<double> layer_parameters)
   //if (projective_layer_type == "tsdf") {
     mapper->tsdf_integrator().max_integration_distance_m(15.0f);
     mapper->tsdf_integrator().view_calculator().raycast_subsampling_factor(2);
+    mapper->tsdf_decay_integrator().decay_factor(0.001);
+    mapper->tsdf_decay_integrator().decayed_weight_threshold(0.001);
+    mapper->tsdf_decay_integrator().set_free_distance_on_decayed(true);
+    mapper->tsdf_decay_integrator().deallocate_decayed_blocks(false);
   //}
   //else {
     mapper->occupancy_integrator().occupied_region_half_width_m(voxel_size_m / 4);
     mapper->occupancy_integrator().max_integration_distance_m(15.0f);
     mapper->occupancy_decay_integrator().free_region_decay_probability(0.55);
-    mapper->occupancy_decay_integrator().occupied_region_decay_probability(0.4);
+    mapper->occupancy_decay_integrator().occupied_region_decay_probability(0.25);
   //}
   mappers_.push_back(mapper);
 }
@@ -165,10 +169,14 @@ void Mapper::fullUpdate(torch::Tensor depth_frame_t, torch::Tensor color_frame_t
 void Mapper::decayOccupancy(long mapper_id) {
   if (mapper_id >= 0) {
     mappers_[mapper_id]->decayOccupancy();
+    mappers_[mapper_id]->decayTsdf();
+    
   }
   else {
     for (auto & mapper : mappers_) {
       mapper->decayOccupancy();
+      mapper->decayTsdf();
+      
     }
   }
 }

@@ -10,4 +10,9 @@
 ##
 
 
-cd src/nvblox_torch/cpp && mkdir -p build && cd build && cmake -DCMAKE_PREFIX_PATH="$1" .. && make -j32 && cd ../../../../
+mkdir -p src/nvblox_torch/bin
+
+cd src/nvblox_torch/cpp && mkdir -p build && cd build \
+    && cmake -DCMAKE_PREFIX_PATH="$1" .. && \
+    make -j32 && cd ../../../../ && cp -r src/nvblox_torch/cpp/build/*.so src/nvblox_torch/bin/ && \
+    rm -rf src/nvblox_torch/cpp/build

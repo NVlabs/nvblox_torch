@@ -17,13 +17,12 @@ from nvblox_torch.sdf_query import (
     SdfSphereCostMultiBlox,
     SdfSphereTrajectoryCostMultiBlox,
 )
-from nvblox_torch.util_file import get_cpp_build_path, join_path
+from nvblox_torch.util_file import get_binary_path, join_path
 
 
 def get_nvblox_mapper_class():
-    cpp_build_path = get_cpp_build_path()
     # print(f"Looking for class in: {cpp_build_path}")
-    torch.classes.load_library(join_path(cpp_build_path, "libpy_nvblox.so"))
+    torch.classes.load_library(join_path(get_binary_path(), "libpy_nvblox.so"))
     Mapper = torch.classes.pynvblox.Mapper
     return Mapper
 

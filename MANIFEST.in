@@ -1,2 +1,2 @@
-prune nvblox_torch/cpp
-include nvblox_torch/cpp/build/libpy_nvblox.so
+graft src/nvblox_torch/bin/*.so
+prune src/nvblox_torch/cpp
