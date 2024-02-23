@@ -134,6 +134,7 @@ class MeshDataset(Dataset):
         image_size: float,
         save_data_dir: str,
         trimesh_mesh: Optional[trimesh.Trimesh] = None,
+        fov_deg: int = 60,
     ) -> None:
         super().__init__()
         self.mesh_file = mesh_file
@@ -145,7 +146,7 @@ class MeshDataset(Dataset):
         self.image_size = image_size
 
         origin, radius = compute_origin_and_radius(self.trimesh_mesh)
-        self.fov_deg = 60
+        self.fov_deg = fov_deg
         sphere_radius = radius * 2.0
         self.camera_poses_gl, self.camera_poses_cv = sample_sphere_poses(
             n_frames, origin, sphere_radius, "cuda"
@@ -157,7 +158,7 @@ class MeshDataset(Dataset):
             image_size=self.image_size,
         )
         self.intrinsics = fov_and_size_to_intrinsics(
-            60, (self.image_size, self.image_size), device="cuda"
+            self.fov_deg, (self.image_size, self.image_size), device="cuda"
         )
 
         if save_data_dir is not None:
