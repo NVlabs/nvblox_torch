@@ -21,6 +21,7 @@ def get_cpp_build_path():
     path = os.path.join(get_module_path(), "cpp/build/")
     return path
 
+
 def get_binary_path():
     path = os.path.join(get_module_path(), "bin/")
     return path

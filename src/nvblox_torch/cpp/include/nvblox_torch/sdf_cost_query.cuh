@@ -25,12 +25,30 @@
 namespace pynvblox {
 	namespace sdf {
 		namespace cost{
-
 	
+
+	template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
+	__global__ void sphereDistanceMultiKernel(
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *max_distance,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+    const uint8_t *blox_enable,
+	const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres, 
+	const bool write_grad,
+	const int num_mappers);
+
+	template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
 	__global__ void sphereDistanceCostMultiKernel(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
 	uint8_t *sparsity_idx,
 	const float *weight,
 	const float *activation_distance,
@@ -42,38 +60,11 @@ namespace pynvblox {
 	const bool write_grad,
 	const int num_mappers);
 
-	__global__ void sphereDistanceCostMultiKernel_map1(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
-	const float *blox_pose,
-    const uint8_t *blox_enable,
-	const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres, 
-	const bool write_grad);
-
-	__global__ void sphereDistanceCostMultiKernel_map2(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
-	const float *blox_pose,
-    const uint8_t *blox_enable,
-	const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres, 
-	const bool write_grad);
-
+	template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
 	__global__ void sphereTrajectoryDistanceCostMultiKernel(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
 	uint8_t *sparsity_idx,
 	const float *weight,
 	const float *activation_distance,
@@ -87,43 +78,12 @@ namespace pynvblox {
 	const bool write_grad,
 	const int num_mappers);
 
-	__global__ void sphereTrajectoryDistanceCostMultiKernel_map1(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
-	const float *blox_pose,
-	const uint8_t *blox_enable,
-    const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad);
 
-	__global__ void sphereTrajectoryDistanceCostMultiKernel_map2(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
-	const float *blox_pose,
-	const uint8_t *blox_enable,
-    const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad);
-
-
+	template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
 	__global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
 	uint8_t *sparsity_idx,
 	const float *weight,
 	const float *activation_distance,
@@ -138,37 +98,6 @@ namespace pynvblox {
 	const int num_mappers);
 
 
-	__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map1(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
-	const float *blox_pose,
-	const uint8_t *blox_enable,
-    const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad);
-
-	__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map2(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
-	const float *blox_pose,
-	const uint8_t *blox_enable,
-    const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad);
 }
 	
 }

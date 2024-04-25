@@ -130,10 +130,11 @@ struct Mapper : torch::CustomClassHolder {
     torch::Tensor sparsity_idx,
     const torch::Tensor weight,
     const torch::Tensor activation_distance,
+    const torch::Tensor max_distance,
     const torch::Tensor blox_pose,
     const torch::Tensor blox_enable,
     const int64_t batch_size, const int64_t horizon, 
-    const int64_t n_spheres, const bool write_grad) ;
+    const int64_t n_spheres, const bool write_grad, const bool compute_esdf=false) ;
 
   std::vector<torch::Tensor> querySphereTrajectorySdfMultiCost(
 		const torch::Tensor sphere_position_rad,

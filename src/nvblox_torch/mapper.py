@@ -141,7 +141,7 @@ class Mapper:
         return self._c_mapper.load_from_file(filename, mapper_id)
 
     def get_occupied_voxels_on_grid(self, min_coord, max_coord, voxel_size):
-        ...
+        pass
 
     def query_sdf(
         self,
@@ -203,9 +203,13 @@ class Mapper:
         sparsity_idx: torch.Tensor,
         weight: torch.Tensor,
         activation_distance: torch.Tensor,
+        max_esdf_distance: torch.Tensor,
         blox_pose: torch.Tensor,
         blox_enable: torch.Tensor,
+        return_loss: bool = False,
+        compute_esdf: bool = False,
     ):
+
         distance = SdfSphereCostMultiBlox.apply(
             sphere_position_rad,
             out_distance,
@@ -213,9 +217,12 @@ class Mapper:
             sparsity_idx,
             weight,
             activation_distance,
+            max_esdf_distance,
             self._c_mapper,
             blox_pose,
             blox_enable,
+            return_loss,
+            compute_esdf,
         )
         return distance
 

@@ -192,10 +192,10 @@ const float sign)
     sum_pt.x = -1.0 * sign *(delta_vector.x);
     sum_pt.y = -1.0 * sign *(delta_vector.y);
     sum_pt.z = -1.0 * sign *(delta_vector.z);
+    sum_pt.w = sph_dist;
+
     if (eta > 0.0)
     {
-
-
     if (sph_dist > eta) {
       sum_pt.w = sph_dist - 0.5 * eta;
 
@@ -208,10 +208,6 @@ const float sign)
       sum_pt.z = scale * sum_pt.z;
     }
 
-    }
-    else
-    {
-      sum_pt.w = sph_dist;
     }
 }
 
@@ -297,11 +293,13 @@ compute_fd_gradient(
     
     if (cl_pt.z == 0 && cl_pt.x == 0 && cl_pt.y == 0)
     {
-      cl_pt.x = -0.001;
-      cl_pt.z = -0.001;
+      cl_pt.x = 0.001;
+      cl_pt.z = 0.001;
     }
     }
 
+
+template<bool FORCE_WRITE_GRAD=false, bool ONLY_DISTANCE=false>
 __device__ __forceinline__ void
 compute_voxel_distance_grad(
   nvblox::EsdfVoxel* esdf_voxel,
@@ -322,42 +320,29 @@ compute_voxel_distance_grad(
   // Get the distance of the relevant voxel.
   distance = voxel_size * sqrt(esdf_voxel->squared_distance_vox);
 
+  // this distance is at the origin of the voxel and not at the face of each voxel:
+
+
     // If it's outside, we set the value to be negative
   if (esdf_voxel->is_inside) {
 		sign = 1.0;  
   }
     
-  distance = (distance * sign) + loc_sphere.w;// + loc_sphere.w;
-  if (distance > 0.0)
+  distance = (distance * sign) + loc_sphere.w + 0.5 * voxel_size;
+  signed_distance = distance;
+
+  if (ONLY_DISTANCE)
   {
-      //grad_pt = -1.0 * ( sign * voxel_size * esdf_voxel->parent_direction.cast<float>());
+    return;
+  }
+  if (distance > 0.0 || FORCE_WRITE_GRAD) // compute gradient only when distance is 
+  {
 
       closest_pt = voxel_size * esdf_voxel->parent_direction.cast<float>();
       // eta scaling here:
-
-
       float4 cl_pt = make_float4(closest_pt(0), closest_pt(1), closest_pt(2), 0.0);
 
-     if (false)
-     {
 
-     
-
-      if (distance != loc_sphere.w)
-      {
-      cl_pt = ((distance)  / norm3df(cl_pt.x, cl_pt.y, cl_pt.z)) * cl_pt;
-      }
-
-      
-
-      cl_pt += loc_sphere;
-      
-      cl_pt.w = 0.0;
-
-      scale_eta_metric(loc_sphere, cl_pt, eta, sum_grad, sign);
-     }
-     if (true)
-     {
       float scale = norm3df(cl_pt.x, cl_pt.y, cl_pt.z);
       if (scale > 0.0)
       {
@@ -372,18 +357,9 @@ compute_voxel_distance_grad(
       cl_pt.w = loc_sphere.w;
       scale_eta_metric_vector(cl_pt, distance, eta, sum_grad, sign);
       
-     }
-      //sum_grad.x = cl_pt.x;
-      //sum_grad.y = cl_pt.y;
-      //sum_grad.z = cl_pt.z;
-      
-      //sum_grad.w = distance;      
-      //sum_grad.x = sphere_length(loc_sphere, cl_pt);
-      //sum_grad.y = 0.0;
-      //sum_grad.z = 0.0; 
+
 
   }
-  signed_distance = distance;
 
 }
 
@@ -413,6 +389,10 @@ scale_speed_metric(const float4 &sphere_0_cache, const float4 &sphere_1_cache,
 
   norm_vel_vec = (0.5 / dt) * norm_vel_vec;
   const float sph_vel = length(norm_vel_vec);
+  if (sph_vel < 0.001)
+  {
+    return;
+  }
 
   if (transform_back) {
 
@@ -475,10 +455,182 @@ scale_speed_metric(const float4 &sphere_0_cache, const float4 &sphere_1_cache,
 }
 
 
+template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
+__global__ void sphereDistanceMultiKernel(
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+  const float *max_distance_global,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
+	const bool write_grad,
+  const int num_mappers
+)
+  {
+  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int b_idx = t_idx / (horizon * nspheres);
+  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
+  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
+  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
+    return;
+  }
+  const int sph_idx =
+      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
+
+  const float eta = 0.0;//activation_distance[0];
+  const float max_distance_local = max_distance_global[0];
+  // Load sphere_pos_rad input
+  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
+  if (sphere_cache.w < 0.0) {
+    return;
+  }
+  sphere_cache.w += eta;
+
+  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
+
+  
+
+  constexpr int kNumVoxelsPerBlock = 8;
+  
+  nvblox::Vector3f query_location;
+
+  // read data into vector3f:
+  float radius = sphere_cache.w;
+
+  float3 global_grad = make_float3(0,0,0);
+
+  float max_distance = -1.0 * max_distance_local;
+  // Get the correct block from the hash.
+  nvblox::EsdfVoxel* esdf_voxel;
+
+  float4 obb_quat = make_float4(0.0);
+  float3 obb_pos = make_float3(0.0);
+  
+  float signed_distance = 0.0;
+  if (NUM_LAYERS <= 4)
+  {
+
+  #pragma unroll
+  for (int i = 0; i < NUM_LAYERS; i++)
+  {
+    if (blox_enable[i] == 0)
+    {
+      continue;
+    }
+    signed_distance =0.0;
+  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
+  // transform sphere to nvblox base frame:
+  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
+                          loc_sphere);
+
+  query_location(0) = loc_sphere.x;
+  query_location(1) = loc_sphere.y;
+  query_location(2) = loc_sphere.z;
+  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+  const float block_size = block_sizes[i];
+  const float voxel_size = block_size / kNumVoxelsPerBlock;
+
+  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
+                                     &esdf_voxel) ||
+      !esdf_voxel->observed) {
+    // This voxel is outside of the map or not observed. Mark it as 100 meters
+    // behind a surface.
+  } else {
+
+    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+    compute_voxel_distance_grad<false, true>(
+      esdf_voxel, sum_grad, 
+    signed_distance,
+    loc_sphere, eta, voxel_size, hashes[i], block_size);
+    if (signed_distance > max_distance)
+    {
+      max_distance = signed_distance - sphere_cache.w;
+      if (write_grad)
+      {
+        inv_transform_vec_quat(obb_pos, obb_quat,sum_grad, global_grad);
+      }
+
+    }
+  
+  }
+
+  }
+  }
+  else
+  {
+
+  
+  for (int i = 0; i < num_mappers; i++)
+  {
+    if (blox_enable[i] == 0)
+    {
+      continue;
+    }
+    signed_distance =0.0;
+  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
+  // transform sphere to nvblox base frame:
+  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
+                          loc_sphere);
+
+  query_location(0) = loc_sphere.x;
+  query_location(1) = loc_sphere.y;
+  query_location(2) = loc_sphere.z;
+  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+  const float block_size = block_sizes[i];
+  const float voxel_size = block_size / kNumVoxelsPerBlock;
+  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
+                                     &esdf_voxel) ||
+      !esdf_voxel->observed) {
+    // This voxel is outside of the map or not observed. Mark it as 100 meters
+    // behind a surface.
+  } else {
+    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+    compute_voxel_distance_grad<false, true>(
+      esdf_voxel, sum_grad, 
+    signed_distance,
+    loc_sphere, eta, voxel_size, hashes[i], block_size);
+    if (signed_distance > max_distance)
+    {
+      max_distance = signed_distance - sphere_cache.w;
+      if (write_grad)
+      {
+        inv_transform_vec_quat(obb_pos, obb_quat,sum_grad, global_grad);
+      }
+
+    }
+    
+  
+  }
+
+  }
+  }
+
+  max_distance = weight[0] * (max_distance );
+
+  if (write_grad) {
+    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
+  }
+  out_distance[sph_idx] = max_distance;
+  sparsity_idx[sph_idx] = 1;
+
+}
+template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
 __global__ void sphereDistanceCostMultiKernel(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
 	uint8_t *sparsity_idx,
 	const float *weight,
 	const float *activation_distance,
@@ -486,7 +638,9 @@ __global__ void sphereDistanceCostMultiKernel(
   const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
   const uint8_t *blox_enable,
   const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres, 
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
 	const bool write_grad,
   const int num_mappers
 )
@@ -531,756 +685,101 @@ __global__ void sphereDistanceCostMultiKernel(
   float3 obb_pos = make_float3(0.0);
   
   float signed_distance = 0.0;
-  for (int i = 0; i < num_mappers; i++)
+  if (NUM_LAYERS <= 4)
   {
-    if (blox_enable[i] == 0)
-    {
-      continue;
-    }
-    signed_distance =0.0;
-  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
-  // transform sphere to nvblox base frame:
-  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
-                          loc_sphere);
 
-  query_location(0) = loc_sphere.x;
-  query_location(1) = loc_sphere.y;
-  query_location(2) = loc_sphere.z;
-  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-  const float block_size = block_sizes[i];
-  const float voxel_size = block_size / kNumVoxelsPerBlock;
-  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
-                                     &esdf_voxel) ||
-      !esdf_voxel->observed) {
-    // This voxel is outside of the map or not observed. Mark it as 100 meters
-    // behind a surface.
-  } else {
-
-     float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-    compute_voxel_distance_grad(
-      esdf_voxel, sum_grad, 
-    signed_distance,
-    loc_sphere, eta, voxel_size, hashes[i], block_size);
-    max_distance += sum_grad.w;
-
-    if(sum_grad.w > 0.0)
-    { 
-      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
-    }
-    
-  
-  }
-  
-  }
-
-
-  // sparsity opt:
-  if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
-  }
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-
-__global__ void sphereDistanceCostMultiKernel_map1(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
-  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
-  const uint8_t *blox_enable,
-  const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres, 
-	const bool write_grad
-)
-  {
-    const int num_mappers = 1;
-
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
-  
-  // Load sphere_pos_rad input
-  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_cache.w < 0.0) {
-    return;
-  }
-  sphere_cache.w += eta;
-
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  
-
-  constexpr int kNumVoxelsPerBlock = 8;
-  
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float radius = sphere_cache.w;
-
-  float3 global_grad = make_float3(0,0,0);
-
-  float max_distance = 0.0f;
-  // Get the correct block from the hash.
-  nvblox::EsdfVoxel* esdf_voxel;
-
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
-  
-  float signed_distance = 0.0;
-
-  #pragma unroll 1
-  for (int i = 0; i < num_mappers; i++)
-  {
-    if (blox_enable[i] == 0)
-    {
-      continue;
-    }
-    signed_distance =0.0;
-  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
-  // transform sphere to nvblox base frame:
-  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
-                          loc_sphere);
-
-  query_location(0) = loc_sphere.x;
-  query_location(1) = loc_sphere.y;
-  query_location(2) = loc_sphere.z;
-  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-  const float block_size = block_sizes[i];
-  const float voxel_size = block_size / kNumVoxelsPerBlock;
-  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
-                                     &esdf_voxel) ||
-      !esdf_voxel->observed) {
-    // This voxel is outside of the map or not observed. Mark it as 100 meters
-    // behind a surface.
-  } else {
-
-     float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-    compute_voxel_distance_grad(
-      esdf_voxel, sum_grad, 
-    signed_distance,
-    loc_sphere, eta, voxel_size, hashes[i], block_size);
-    max_distance += sum_grad.w;
-
-    if(sum_grad.w > 0.0)
-    { 
-      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
-    }
-    
-  
-  }
-  
-  }
-
-
-  // sparsity opt:
-  if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
-  }
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-
-__global__ void sphereDistanceCostMultiKernel_map2(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
-  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
-  const uint8_t *blox_enable,
-  const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres, 
-	const bool write_grad
-)
-  {
-    const int num_mappers = 2;
-
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
-  
-  // Load sphere_pos_rad input
-  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_cache.w < 0.0) {
-    return;
-  }
-  sphere_cache.w += eta;
-
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  
-
-  constexpr int kNumVoxelsPerBlock = 8;
-  
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float radius = sphere_cache.w;
-
-  float3 global_grad = make_float3(0,0,0);
-
-  float max_distance = 0.0f;
-  // Get the correct block from the hash.
-  nvblox::EsdfVoxel* esdf_voxel;
-
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
-  
-  float signed_distance = 0.0;
-
-  #pragma unroll 2
-  for (int i = 0; i < num_mappers; i++)
-  {
-    if (blox_enable[i] == 0)
-    {
-      continue;
-    }
-    signed_distance =0.0;
-  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
-  // transform sphere to nvblox base frame:
-  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
-                          loc_sphere);
-
-  query_location(0) = loc_sphere.x;
-  query_location(1) = loc_sphere.y;
-  query_location(2) = loc_sphere.z;
-  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-  const float block_size = block_sizes[i];
-  const float voxel_size = block_size / kNumVoxelsPerBlock;
-  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
-                                     &esdf_voxel) ||
-      !esdf_voxel->observed) {
-    // This voxel is outside of the map or not observed. Mark it as 100 meters
-    // behind a surface.
-  } else {
-
-     float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-    compute_voxel_distance_grad(
-      esdf_voxel, sum_grad, 
-    signed_distance,
-    loc_sphere, eta, voxel_size, hashes[i], block_size);
-    max_distance += sum_grad.w;
-
-    if(sum_grad.w > 0.0)
-    { 
-      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
-    }
-    
-  
-  }
-  
-  }
-
-
-  // sparsity opt:
-  if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
-  }
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-__global__ void sphereTrajectoryDistanceCostMultiKernel(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
-  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
-  const uint8_t *blox_enable,
-  const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad,
-  const int num_mappers)
-{
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
-  
-  // Load sphere_pos_rad input
-  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_cache.w < 0.0) {
-    return;
-  }
-  sphere_cache.w += eta;
-
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  float radius = sphere_cache.w;
-
-
-  constexpr int kNumVoxelsPerBlock = 8;
-  
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float max_distance = 0.0f;
-  float signed_distance = 0.0f;
-  
-  float3 global_grad = make_float3(0,0,0);
-
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
-  float current_distance = 0.0f;
   #pragma unroll
-  for(int m = 0; m<num_mappers; m++)
+  for (int i = 0; i < NUM_LAYERS; i++)
   {
-    if (blox_enable[m] == 0)
+    if (blox_enable[i] == 0)
     {
       continue;
     }
-    current_distance = 0.0;
-    signed_distance = 0.0;
-      load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
-    transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
-                          loc_sphere);
-
+    signed_distance =0.0;
+  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
   // transform sphere to nvblox base frame:
+  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
+                          loc_sphere);
 
   query_location(0) = loc_sphere.x;
   query_location(1) = loc_sphere.y;
   query_location(2) = loc_sphere.z;
-  const float block_size = block_sizes[m];
+  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+  const float block_size = block_sizes[i];
   const float voxel_size = block_size / kNumVoxelsPerBlock;
-  
-  // Get the correct block from the hash.
-  nvblox::EsdfVoxel* esdf_voxel;
-  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
                                      &esdf_voxel) ||
       !esdf_voxel->observed) {
     // This voxel is outside of the map or not observed. Mark it as 100 meters
     // behind a surface.
   } else {
 
-    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+     float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
 
-    compute_voxel_distance_grad(esdf_voxel, sum_grad,
-    signed_distance, 
-    loc_sphere, eta, voxel_size, hashes[m], block_size);
+    compute_voxel_distance_grad(
+      esdf_voxel, sum_grad, 
+    signed_distance,
+    loc_sphere, eta, voxel_size, hashes[i], block_size);
     max_distance += sum_grad.w;
-    if (sum_grad.w > 0.0)
-    {
+
+    if(sum_grad.w > 0.0)
+    { 
       inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
     }
-    }
- 
     
+  
   }
 
-// sparsity opt:
-if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
   }
-if(enable_speed_metric)
-{
-
-
-bool sweep_back = false;
-bool sweep_fwd = false;
-float4 sphere_0_cache, sphere_2_cache;
-
-const int b_addrs =
-      b_idx * horizon * nspheres; // + h_idx * n_spheres + sph_idx;
-
-if (h_idx > 0) {
-    sphere_0_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    float sphere_0_distance = sphere_distance(sphere_0_cache, sphere_cache);
-    if (sphere_0_distance > 0.0)
+  }
+  else
   {
-    sweep_back = true;
-  }
-  }
 
-  if (h_idx < horizon - 1) {
-    sphere_2_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    float sphere_2_distance = sphere_distance(sphere_2_cache, sphere_cache);
-    if(sphere_2_distance>0.0)
-    {
-
-    
-    sweep_fwd = true;
-    }
-  }
-    
- if (sweep_back && sweep_fwd) {
-    const float dt = speed_dt[0];
-
-    scale_speed_metric(sphere_0_cache, sphere_cache, sphere_2_cache, dt,
-                       write_grad, max_distance, global_grad);
-  }
-
-}
-
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-
-__global__ void sphereTrajectoryDistanceCostMultiKernel_map1(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
-  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
-  const uint8_t *blox_enable,
-  const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad)
-{
-  const int num_mappers = 1;
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
   
-  // Load sphere_pos_rad input
-  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_cache.w < 0.0) {
-    return;
-  }
-  sphere_cache.w += eta;
-
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  float radius = sphere_cache.w;
-
-
-  constexpr int kNumVoxelsPerBlock = 8;
-  
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float max_distance = 0.0f;
-  float signed_distance = 0.0f;
-  
-  float3 global_grad = make_float3(0,0,0);
-
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
-  float current_distance = 0.0f;
-  #pragma unroll 1
-  for(int m = 0; m<num_mappers; m++)
+  for (int i = 0; i < num_mappers; i++)
   {
-    if (blox_enable[m] == 0)
+    if (blox_enable[i] == 0)
     {
       continue;
     }
-    current_distance = 0.0;
-    signed_distance = 0.0;
-      load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
-    transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
-                          loc_sphere);
-
+    signed_distance =0.0;
+  load_layer_pose(&blox_pose[i*8], obb_pos, obb_quat);
   // transform sphere to nvblox base frame:
+  transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
+                          loc_sphere);
 
   query_location(0) = loc_sphere.x;
   query_location(1) = loc_sphere.y;
   query_location(2) = loc_sphere.z;
-  const float block_size = block_sizes[m];
+  float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+  const float block_size = block_sizes[i];
   const float voxel_size = block_size / kNumVoxelsPerBlock;
-  
-  // Get the correct block from the hash.
-  nvblox::EsdfVoxel* esdf_voxel;
-  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[i], query_location, block_size,
                                      &esdf_voxel) ||
       !esdf_voxel->observed) {
     // This voxel is outside of the map or not observed. Mark it as 100 meters
     // behind a surface.
   } else {
 
-    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+     float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
 
-    compute_voxel_distance_grad(esdf_voxel, sum_grad,
-    signed_distance, 
-    loc_sphere, eta, voxel_size, hashes[m], block_size);
+    compute_voxel_distance_grad(
+      esdf_voxel, sum_grad, 
+    signed_distance,
+    loc_sphere, eta, voxel_size, hashes[i], block_size);
     max_distance += sum_grad.w;
-    if (sum_grad.w > 0.0)
-    {
+
+    if(sum_grad.w > 0.0)
+    { 
       inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
     }
-    }
- 
     
-  }
-
-// sparsity opt:
-if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
-  }
-if(enable_speed_metric)
-{
-
-
-bool sweep_back = false;
-bool sweep_fwd = false;
-float4 sphere_0_cache, sphere_2_cache;
-
-const int b_addrs =
-      b_idx * horizon * nspheres; // + h_idx * n_spheres + sph_idx;
-
-if (h_idx > 0) {
-    sphere_0_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    float sphere_0_distance = sphere_distance(sphere_0_cache, sphere_cache);
-    if (sphere_0_distance > 0.0)
-  {
-    sweep_back = true;
-  }
-  }
-
-  if (h_idx < horizon - 1) {
-    sphere_2_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    float sphere_2_distance = sphere_distance(sphere_2_cache, sphere_cache);
-    if(sphere_2_distance>0.0)
-    {
-
-    
-    sweep_fwd = true;
-    }
-  }
-    
- if (sweep_back && sweep_fwd) {
-    const float dt = speed_dt[0];
-
-    scale_speed_metric(sphere_0_cache, sphere_cache, sphere_2_cache, dt,
-                       write_grad, max_distance, global_grad);
-  }
-
-}
-
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-__global__ void sphereTrajectoryDistanceCostMultiKernel_map2(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
-	uint8_t *sparsity_idx,
-	const float *weight,
-	const float *activation_distance,
-	const float *speed_dt,
-	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
-  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
-  const uint8_t *blox_enable,
-  const float *block_sizes,
-	const int batch_size, const int horizon, const int nspheres,
-	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad
-  )
-{
-  const int num_mappers = 2;
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
   
-  // Load sphere_pos_rad input
-  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_cache.w < 0.0) {
-    return;
   }
-  sphere_cache.w += eta;
 
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  float radius = sphere_cache.w;
-
-
-  constexpr int kNumVoxelsPerBlock = 8;
-  
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float max_distance = 0.0f;
-  float signed_distance = 0.0f;
-  
-  float3 global_grad = make_float3(0,0,0);
-
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
-  float current_distance = 0.0f;
-  #pragma unroll 2
-  for(int m = 0; m<num_mappers; m++)
-  {
-    if (blox_enable[m] == 0)
-    {
-      continue;
-    }
-    current_distance = 0.0;
-    signed_distance = 0.0;
-      load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
-    transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
-                          loc_sphere);
-
-  // transform sphere to nvblox base frame:
-
-  query_location(0) = loc_sphere.x;
-  query_location(1) = loc_sphere.y;
-  query_location(2) = loc_sphere.z;
-  const float block_size = block_sizes[m];
-  const float voxel_size = block_size / kNumVoxelsPerBlock;
-  
-  // Get the correct block from the hash.
-  nvblox::EsdfVoxel* esdf_voxel;
-  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                     &esdf_voxel) ||
-      !esdf_voxel->observed) {
-    // This voxel is outside of the map or not observed. Mark it as 100 meters
-    // behind a surface.
-  } else {
-
-    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
-
-    compute_voxel_distance_grad(esdf_voxel, sum_grad,
-    signed_distance, 
-    loc_sphere, eta, voxel_size, hashes[m], block_size);
-    max_distance += sum_grad.w;
-    if (sum_grad.w > 0.0)
-    {
-      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
-    }
-    }
- 
-    
+  }
   }
 
   // sparsity opt:
@@ -1295,6 +794,181 @@ __global__ void sphereTrajectoryDistanceCostMultiKernel_map2(
     out_distance[sph_idx] = 0.0;
     return;
   }
+  // else max_dist != 0
+  max_distance = weight[0] * max_distance;
+
+  if (write_grad) {
+    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
+  }
+  out_distance[sph_idx] = max_distance;
+  sparsity_idx[sph_idx] = 1;
+
+}
+
+template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
+__global__ void sphereTrajectoryDistanceCostMultiKernel(
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers)
+{
+  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  const int b_idx = t_idx / (horizon * nspheres);
+  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
+  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
+  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
+    return;
+  }
+  const int sph_idx =
+      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
+
+  const float eta = activation_distance[0];
+  
+  // Load sphere_pos_rad input
+  float4 sphere_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
+  if (sphere_cache.w < 0.0) {
+    return;
+  }
+  sphere_cache.w += eta;
+
+  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
+
+  float radius = sphere_cache.w;
+
+
+  constexpr int kNumVoxelsPerBlock = 8;
+  
+  nvblox::Vector3f query_location;
+
+  // read data into vector3f:
+  float max_distance = 0.0f;
+  float signed_distance = 0.0f;
+  
+  float3 global_grad = make_float3(0,0,0);
+
+  float4 obb_quat = make_float4(0.0);
+  float3 obb_pos = make_float3(0.0);
+  float current_distance = 0.0f;
+
+  if (NUM_LAYERS <= 4)
+  {
+ #pragma unroll
+  for(int m = 0; m<NUM_LAYERS; m++)
+  {
+    if (blox_enable[m] == 0)
+    {
+      continue;
+    }
+    current_distance = 0.0;
+    signed_distance = 0.0;
+      load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
+    transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
+                          loc_sphere);
+
+  // transform sphere to nvblox base frame:
+
+  query_location(0) = loc_sphere.x;
+  query_location(1) = loc_sphere.y;
+  query_location(2) = loc_sphere.z;
+  const float block_size = block_sizes[m];
+  const float voxel_size = block_size / kNumVoxelsPerBlock;
+  
+  // Get the correct block from the hash.
+  nvblox::EsdfVoxel* esdf_voxel;
+  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                     &esdf_voxel) ||
+      !esdf_voxel->observed) {
+    // This voxel is outside of the map or not observed. Mark it as 100 meters
+    // behind a surface.
+  } else {
+
+    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+    compute_voxel_distance_grad(esdf_voxel, sum_grad,
+    signed_distance, 
+    loc_sphere, eta, voxel_size, hashes[m], block_size);
+    max_distance += sum_grad.w;
+    if (sum_grad.w > 0.0)
+    {
+      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
+    }
+    }
+ 
+    
+  }
+  }
+  else
+  {
+     #pragma unroll
+  for(int m = 0; m<num_mappers; m++)
+  {
+    if (blox_enable[m] == 0)
+    {
+      continue;
+    }
+    current_distance = 0.0;
+    signed_distance = 0.0;
+      load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
+    transform_sphere_quat(obb_pos, obb_quat, sphere_cache,
+                          loc_sphere);
+
+  // transform sphere to nvblox base frame:
+
+  query_location(0) = loc_sphere.x;
+  query_location(1) = loc_sphere.y;
+  query_location(2) = loc_sphere.z;
+  const float block_size = block_sizes[m];
+  const float voxel_size = block_size / kNumVoxelsPerBlock;
+  
+  // Get the correct block from the hash.
+  nvblox::EsdfVoxel* esdf_voxel;
+  if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                     &esdf_voxel) ||
+      !esdf_voxel->observed) {
+    // This voxel is outside of the map or not observed. Mark it as 100 meters
+    // behind a surface.
+  } else {
+
+    float4 sum_grad = make_float4(0.0,0.0,0.0,0.0);
+
+    compute_voxel_distance_grad(esdf_voxel, sum_grad,
+    signed_distance, 
+    loc_sphere, eta, voxel_size, hashes[m], block_size);
+    max_distance += sum_grad.w;
+    if (sum_grad.w > 0.0)
+    {
+      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
+    }
+    }
+ 
+    
+  }
+  }
+ 
+
+// sparsity opt:
+if (max_distance == 0) {
+    if (sparsity_idx[sph_idx] == 0) {
+      return;
+    }
+    sparsity_idx[sph_idx] = 0;
+    if (write_grad) {
+      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
+    }
+    out_distance[sph_idx] = 0.0;
+    return;
+  }
 if(enable_speed_metric)
 {
 
@@ -1350,10 +1024,11 @@ if (h_idx > 0) {
 
 }
 
+template<int NUM_LAYERS=100, typename geom_scalar_t=float, typename dist_scalar_t=float, typename grad_scalar_t=float>
 __global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
-	const float *sphere_pos_rad, 
-	float *out_distance,
-	float *out_grad,
+	const geom_scalar_t *sphere_pos_rad, 
+	dist_scalar_t *out_distance,
+	grad_scalar_t *out_grad,
 	uint8_t *sparsity_idx,
 	const float *weight,
 	const float *activation_distance,
@@ -1446,8 +1121,9 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
 
   float4 obb_quat = make_float4(0.0);
   float3 obb_pos = make_float3(0.0);
-
-  for(int m = 0; m<num_mappers; m++)
+  if (NUM_LAYERS <= 4)
+  {
+     for(int m = 0; m<NUM_LAYERS; m++)
   {
     if (blox_enable[m] == 0)
     {
@@ -1484,7 +1160,8 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
     else 
     {
 
-      compute_voxel_distance_grad(esdf_voxel, sum_grad, 
+      compute_voxel_distance_grad(esdf_voxel, 
+      sum_grad, 
       signed_distance,
       loc_sphere_1, eta, voxel_size, hashes[m], block_size);
       // update jump distance:
@@ -1577,6 +1254,143 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel(
   
     
   }
+  }
+  else
+  {
+
+  
+  for(int m = 0; m<num_mappers; m++)
+  {
+    if (blox_enable[m] == 0)
+    {
+      continue;
+    }
+    signed_distance = 0.0;
+    const float block_size = block_sizes[m];
+    const float voxel_size = block_size / kNumVoxelsPerBlock;
+
+    load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
+    transform_sphere_quat(obb_pos, obb_quat, sphere_1_cache,
+                          loc_sphere_1);
+
+    // transform sphere to nvblox base frame:
+
+    float curr_jump_distance = 0.0;
+    float4 sum_grad = make_float4(0.0, 0.0, 0.0, 0.0);
+
+
+
+
+    query_location(0) = loc_sphere_1.x;
+    query_location(1) = loc_sphere_1.y;
+    query_location(2) = loc_sphere_1.z;
+    
+    // Get the correct block from the hash.
+    nvblox::EsdfVoxel* esdf_voxel;
+    if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+        !esdf_voxel->observed) {
+      // This voxel is outside of the map or not observed. 
+      curr_jump_distance = loc_sphere_1.w;// jump by sphere radius
+    } 
+    else 
+    {
+
+      compute_voxel_distance_grad(esdf_voxel, 
+      sum_grad, 
+      signed_distance,
+      loc_sphere_1, eta, voxel_size, hashes[m], block_size);
+      // update jump distance:
+      curr_jump_distance = fabsf(signed_distance);
+    }
+
+    const float jump_mid_distance = curr_jump_distance;
+    float4 t_grad = make_float4(0.0, 0.0, 0.0, 0.0);
+
+    if (sweep_back && jump_mid_distance < sphere_0_distance/2)
+    {
+
+      transform_sphere_quat(obb_pos, obb_quat, sphere_0_cache, loc_sphere_0);
+      for(int j=0; j<sw_steps; j++)
+      {
+        signed_distance = 0.0;
+
+        if(curr_jump_distance >= (sphere_0_len/2)) {
+          break;
+        }
+        k0 = 1 - (curr_jump_distance/sphere_0_len);
+        // compute collision
+        const float4 interpolated_sphere =
+        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_0;
+        query_location(0) = interpolated_sphere.x;
+        query_location(1) = interpolated_sphere.y;
+        query_location(2) = interpolated_sphere.z;
+        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+            !esdf_voxel->observed) {
+          // This voxel is outside of the map or not observed. 
+          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
+        } 
+        else 
+        {
+
+          compute_voxel_distance_grad(esdf_voxel, t_grad, 
+          signed_distance,
+          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
+          // update jump distance:
+          curr_jump_distance += fabsf(signed_distance);
+          sum_grad += t_grad;
+        }
+
+
+      }
+    }
+    if(sweep_fwd && jump_mid_distance < (sphere_2_len / 2))
+    {
+      curr_jump_distance = jump_mid_distance;
+      transform_sphere_quat(obb_pos, obb_quat, sphere_2_cache, loc_sphere_2);
+      for(int j=0; j< sw_steps; j++)
+      {
+        if (curr_jump_distance >= (sphere_2_len)/2)
+        {
+          break;
+        }
+        k0 = 1 - (curr_jump_distance/sphere_2_len);
+        // compute collision
+        const float4 interpolated_sphere =
+        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_2;
+        query_location(0) = interpolated_sphere.x;
+        query_location(1) = interpolated_sphere.y;
+        query_location(2) = interpolated_sphere.z;
+        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
+                                      &esdf_voxel) ||
+            !esdf_voxel->observed) {
+          // This voxel is outside of the map or not observed. 
+          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
+        } 
+        else 
+        {
+
+          compute_voxel_distance_grad(esdf_voxel, t_grad, 
+          signed_distance,
+          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
+          // update jump distance:
+          curr_jump_distance += fabsf(signed_distance);
+          sum_grad += t_grad;
+        }
+      }
+    }
+
+    if (sum_grad.w > 0.0)
+    {
+      max_distance += sum_grad.w;
+
+      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
+    }
+  
+    
+  }
+  }
 
 
   // sparsity opt:
@@ -1615,8 +1429,177 @@ if(enable_speed_metric)
 
 }
 
+template __global__ void sphereDistanceCostMultiKernel<1>(
+    const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+  const uint8_t *blox_enable,
+	const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres, 
+	const bool write_grad,
+	const int num_mappers
+  );
 
-__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map1(
+template __global__ void sphereDistanceCostMultiKernel<2>(
+    const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+  const uint8_t *blox_enable,
+	const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres, 
+	const bool write_grad,
+	const int num_mappers
+  );
+
+template __global__ void sphereDistanceCostMultiKernel<3>(
+    const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+  const uint8_t *blox_enable,
+	const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres, 
+	const bool write_grad,
+	const int num_mappers
+  );
+
+template __global__ void sphereDistanceCostMultiKernel<4>(
+    const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+  const uint8_t *blox_enable,
+	const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres, 
+	const bool write_grad,
+	const int num_mappers
+  );
+
+template __global__ void sphereDistanceCostMultiKernel<100>(
+    const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* block_hash,
+	const float *blox_pose,
+  const uint8_t *blox_enable,
+	const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres, 
+	const bool write_grad,
+	const int num_mappers
+  );
+
+template __global__ void sphereDistanceMultiKernel<100>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+  const float *max_distance_global,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
+	const bool write_grad,
+  const int num_mappers);
+
+template __global__ void sphereDistanceMultiKernel<1>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+  const float *max_distance_global,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
+	const bool write_grad,
+  const int num_mappers);
+
+template __global__ void sphereDistanceMultiKernel<2>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+  const float *max_distance_global,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
+	const bool write_grad,
+  const int num_mappers);
+
+template __global__ void sphereDistanceMultiKernel<3>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+  const float *max_distance_global,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
+	const bool write_grad,
+  const int num_mappers);
+
+template __global__ void sphereDistanceMultiKernel<4>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+  const float *max_distance_global,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, 
+  const int horizon, 
+  const int nspheres, 
+	const bool write_grad,
+  const int num_mappers);
+
+template __global__ void sphereTrajectoryDistanceCostMultiKernel<1>(
 	const float *sphere_pos_rad, 
 	float *out_distance,
 	float *out_grad,
@@ -1630,260 +1613,10 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map1(
   const float *block_sizes,
 	const int batch_size, const int horizon, const int nspheres,
 	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad)
-{
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int num_mappers = 1;
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
+	const bool write_grad,
+  const int num_mappers);
   
-  // Load sphere_pos_rad input
-  float4 sphere_1_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_1_cache.w < 0.0) {
-    return;
-  }
-  sphere_1_cache.w += eta;
-
-  const int sw_steps = sweep_steps;
-  const float fl_sw_steps = sw_steps;
-
-  bool sweep_back = false;
-  bool sweep_fwd = false;
-  float4 sphere_0_cache, sphere_2_cache;
-  float signed_distance = 0.0;
-  float sphere_0_distance, sphere_2_distance, sphere_0_len, sphere_2_len;
-
-  const int b_addrs =
-        b_idx * horizon * nspheres; 
-
-  if (h_idx > 0) 
-  {
-    sphere_0_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    sphere_0_cache.w += eta;
-    sphere_0_distance = sphere_distance(sphere_0_cache, sphere_1_cache);
-    sphere_0_len = sphere_0_distance + sphere_0_cache.w * 2;
-    if (sphere_0_distance > 0.0) {
-      sweep_back = true;
-    }
-  }
-
-  if (h_idx < horizon - 1) 
-  {
-    sphere_2_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    sphere_2_cache.w += eta;
-    sphere_2_distance = sphere_distance(sphere_2_cache, sphere_1_cache);
-    sphere_2_len = sphere_2_distance + sphere_2_cache.w * 2;
-    if (sphere_2_distance > 0.0) {
-      sweep_fwd = true;
-    }
-  }
-    
-
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  float4 loc_sphere_0, loc_sphere_1, loc_sphere_2;
-  float k0 = 0.0;
-
-
-
-  float radius = sphere_1_cache.w;
-
-
-  constexpr int kNumVoxelsPerBlock = 8;
-  
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float max_distance = 0.0f;
-  
-  float3 global_grad = make_float3(0,0,0);
-
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
-
-  #pragma unroll 1
-  for(int m = 0; m<num_mappers; m++)
-  {
-    if (blox_enable[m] == 0)
-    {
-      continue;
-    }
-    signed_distance = 0.0;
-    const float block_size = block_sizes[m];
-    const float voxel_size = block_size / kNumVoxelsPerBlock;
-
-    load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
-    transform_sphere_quat(obb_pos, obb_quat, sphere_1_cache,
-                          loc_sphere_1);
-
-    // transform sphere to nvblox base frame:
-
-    float curr_jump_distance = 0.0;
-    float4 sum_grad = make_float4(0.0, 0.0, 0.0, 0.0);
-
-
-
-
-    query_location(0) = loc_sphere_1.x;
-    query_location(1) = loc_sphere_1.y;
-    query_location(2) = loc_sphere_1.z;
-    
-    // Get the correct block from the hash.
-    nvblox::EsdfVoxel* esdf_voxel;
-    if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                      &esdf_voxel) ||
-        !esdf_voxel->observed) {
-      // This voxel is outside of the map or not observed. 
-      curr_jump_distance = loc_sphere_1.w;// jump by sphere radius
-    } 
-    else 
-    {
-
-      compute_voxel_distance_grad(esdf_voxel, sum_grad, 
-      signed_distance,
-      loc_sphere_1, eta, voxel_size, hashes[m], block_size);
-      // update jump distance:
-      curr_jump_distance = fabsf(signed_distance);
-    }
-
-    const float jump_mid_distance = curr_jump_distance;
-    float4 t_grad = make_float4(0.0, 0.0, 0.0, 0.0);
-
-    if (sweep_back && jump_mid_distance < sphere_0_distance/2)
-    {
-
-      transform_sphere_quat(obb_pos, obb_quat, sphere_0_cache, loc_sphere_0);
-      for(int j=0; j<sw_steps; j++)
-      {
-        signed_distance = 0.0;
-
-        if(curr_jump_distance >= (sphere_0_len/2)) {
-          break;
-        }
-        k0 = 1 - (curr_jump_distance/sphere_0_len);
-        // compute collision
-        const float4 interpolated_sphere =
-        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_0;
-        query_location(0) = interpolated_sphere.x;
-        query_location(1) = interpolated_sphere.y;
-        query_location(2) = interpolated_sphere.z;
-        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                      &esdf_voxel) ||
-            !esdf_voxel->observed) {
-          // This voxel is outside of the map or not observed. 
-          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
-        } 
-        else 
-        {
-
-          compute_voxel_distance_grad(esdf_voxel, t_grad, 
-          signed_distance,
-          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
-          // update jump distance:
-          curr_jump_distance += fabsf(signed_distance);
-          sum_grad += t_grad;
-        }
-
-
-      }
-    }
-    if(sweep_fwd && jump_mid_distance < (sphere_2_len / 2))
-    {
-      curr_jump_distance = jump_mid_distance;
-      transform_sphere_quat(obb_pos, obb_quat, sphere_2_cache, loc_sphere_2);
-      for(int j=0; j< sw_steps; j++)
-      {
-        if (curr_jump_distance >= (sphere_2_len)/2)
-        {
-          break;
-        }
-        k0 = 1 - (curr_jump_distance/sphere_2_len);
-        // compute collision
-        const float4 interpolated_sphere =
-        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_2;
-        query_location(0) = interpolated_sphere.x;
-        query_location(1) = interpolated_sphere.y;
-        query_location(2) = interpolated_sphere.z;
-        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                      &esdf_voxel) ||
-            !esdf_voxel->observed) {
-          // This voxel is outside of the map or not observed. 
-          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
-        } 
-        else 
-        {
-
-          compute_voxel_distance_grad(esdf_voxel, t_grad, 
-          signed_distance,
-          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
-          // update jump distance:
-          curr_jump_distance += fabsf(signed_distance);
-          sum_grad += t_grad;
-        }
-      }
-    }
-
-    if (sum_grad.w > 0.0)
-    {
-      max_distance += sum_grad.w;
-
-      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
-    }
-  
-    
-  }
-
-
-  // sparsity opt:
-if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
-}
-if(enable_speed_metric)
-{
-
-
- if (sweep_back && sweep_fwd) {
-    const float dt = speed_dt[0];
-
-    scale_speed_metric(sphere_0_cache, sphere_1_cache, sphere_2_cache, dt,
-                       write_grad, max_distance, global_grad);
-  }
-
-}
-
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-
-
-__global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map2(
+template __global__ void sphereTrajectoryDistanceCostMultiKernel<2>(
 	const float *sphere_pos_rad, 
 	float *out_distance,
 	float *out_grad,
@@ -1897,260 +1630,146 @@ __global__ void sphereSweptTrajectoryDistanceCostMultiKernel_map2(
   const float *block_sizes,
 	const int batch_size, const int horizon, const int nspheres,
 	const int sweep_steps, const bool enable_speed_metric, 
-	const bool write_grad)
-{
-  const int t_idx = blockIdx.x * blockDim.x + threadIdx.x;
-  const int b_idx = t_idx / (horizon * nspheres);
-  const int h_idx = (t_idx - b_idx * (horizon * nspheres)) / nspheres;
-  const int lsph_idx = (t_idx - b_idx * horizon * nspheres - h_idx * nspheres);
-  if (lsph_idx >= nspheres || b_idx >= batch_size || h_idx >= horizon) {
-    return;
-  }
-  const int num_mappers = 2;
-  const int sph_idx =
-      b_idx * horizon * nspheres + h_idx * nspheres + lsph_idx;
-
-  const float eta = activation_distance[0];
+	const bool write_grad,
+  const int num_mappers);
   
-  // Load sphere_pos_rad input
-  float4 sphere_1_cache = *(float4 *)&sphere_pos_rad[sph_idx * 4];
-  if (sphere_1_cache.w < 0.0) {
-    return;
-  }
-  sphere_1_cache.w += eta;
-
-  const int sw_steps = sweep_steps;
-  const float fl_sw_steps = sw_steps;
-
-  bool sweep_back = false;
-  bool sweep_fwd = false;
-  float4 sphere_0_cache, sphere_2_cache;
-  float signed_distance = 0.0;
-  float sphere_0_distance, sphere_2_distance, sphere_0_len, sphere_2_len;
-
-  const int b_addrs =
-        b_idx * horizon * nspheres; 
-
-  if (h_idx > 0) 
-  {
-    sphere_0_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx - 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    sphere_0_cache.w += eta;
-    sphere_0_distance = sphere_distance(sphere_0_cache, sphere_1_cache);
-    sphere_0_len = sphere_0_distance + sphere_0_cache.w * 2;
-    if (sphere_0_distance > 0.0) {
-      sweep_back = true;
-    }
-  }
-
-  if (h_idx < horizon - 1) 
-  {
-    sphere_2_cache =
-        *(float4 *)&sphere_pos_rad[b_addrs * 4 + (h_idx + 1) * nspheres * 4 +
-                                   lsph_idx * 4];
-    sphere_2_cache.w += eta;
-    sphere_2_distance = sphere_distance(sphere_2_cache, sphere_1_cache);
-    sphere_2_len = sphere_2_distance + sphere_2_cache.w * 2;
-    if (sphere_2_distance > 0.0) {
-      sweep_fwd = true;
-    }
-  }
-    
-
-  float4 loc_sphere = make_float4(0.0, 0.0, 0.0, 0.0);
-
-  float4 loc_sphere_0, loc_sphere_1, loc_sphere_2;
-  float k0 = 0.0;
-
-
-
-  float radius = sphere_1_cache.w;
-
-
-  constexpr int kNumVoxelsPerBlock = 8;
+template __global__ void sphereTrajectoryDistanceCostMultiKernel<3>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
   
-  nvblox::Vector3f query_location;
-
-  // read data into vector3f:
-  float max_distance = 0.0f;
+template __global__ void sphereTrajectoryDistanceCostMultiKernel<4>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
   
-  float3 global_grad = make_float3(0,0,0);
+template __global__ void sphereTrajectoryDistanceCostMultiKernel<100>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
 
-  float4 obb_quat = make_float4(0.0);
-  float3 obb_pos = make_float3(0.0);
+template __global__ void sphereSweptTrajectoryDistanceCostMultiKernel<1>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
 
-  #pragma unroll 2
-  for(int m = 0; m<num_mappers; m++)
-  {
-    if (blox_enable[m] == 0)
-    {
-      continue;
-    }
-    signed_distance = 0.0;
-    const float block_size = block_sizes[m];
-    const float voxel_size = block_size / kNumVoxelsPerBlock;
+template __global__ void sphereSweptTrajectoryDistanceCostMultiKernel<2>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
 
-    load_layer_pose(&blox_pose[m*8], obb_pos, obb_quat);
-    transform_sphere_quat(obb_pos, obb_quat, sphere_1_cache,
-                          loc_sphere_1);
+template __global__ void sphereSweptTrajectoryDistanceCostMultiKernel<3>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
 
-    // transform sphere to nvblox base frame:
+template __global__ void sphereSweptTrajectoryDistanceCostMultiKernel<4>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
 
-    float curr_jump_distance = 0.0;
-    float4 sum_grad = make_float4(0.0, 0.0, 0.0, 0.0);
-
-
-
-
-    query_location(0) = loc_sphere_1.x;
-    query_location(1) = loc_sphere_1.y;
-    query_location(2) = loc_sphere_1.z;
-    
-    // Get the correct block from the hash.
-    nvblox::EsdfVoxel* esdf_voxel;
-    if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                      &esdf_voxel) ||
-        !esdf_voxel->observed) {
-      // This voxel is outside of the map or not observed. 
-      curr_jump_distance = loc_sphere_1.w;// jump by sphere radius
-    } 
-    else 
-    {
-
-      compute_voxel_distance_grad(esdf_voxel, sum_grad, 
-      signed_distance,
-      loc_sphere_1, eta, voxel_size, hashes[m], block_size);
-      // update jump distance:
-      curr_jump_distance = fabsf(signed_distance);
-    }
-
-    const float jump_mid_distance = curr_jump_distance;
-    float4 t_grad = make_float4(0.0, 0.0, 0.0, 0.0);
-
-    if (sweep_back && jump_mid_distance < sphere_0_distance/2)
-    {
-
-      transform_sphere_quat(obb_pos, obb_quat, sphere_0_cache, loc_sphere_0);
-      for(int j=0; j<sw_steps; j++)
-      {
-        signed_distance = 0.0;
-
-        if(curr_jump_distance >= (sphere_0_len/2)) {
-          break;
-        }
-        k0 = 1 - (curr_jump_distance/sphere_0_len);
-        // compute collision
-        const float4 interpolated_sphere =
-        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_0;
-        query_location(0) = interpolated_sphere.x;
-        query_location(1) = interpolated_sphere.y;
-        query_location(2) = interpolated_sphere.z;
-        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                      &esdf_voxel) ||
-            !esdf_voxel->observed) {
-          // This voxel is outside of the map or not observed. 
-          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
-        } 
-        else 
-        {
-
-          compute_voxel_distance_grad(esdf_voxel, t_grad, 
-          signed_distance,
-          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
-          // update jump distance:
-          curr_jump_distance += fabsf(signed_distance);
-          sum_grad += t_grad;
-        }
-
-
-      }
-    }
-    if(sweep_fwd && jump_mid_distance < (sphere_2_len / 2))
-    {
-      curr_jump_distance = jump_mid_distance;
-      transform_sphere_quat(obb_pos, obb_quat, sphere_2_cache, loc_sphere_2);
-      for(int j=0; j< sw_steps; j++)
-      {
-        if (curr_jump_distance >= (sphere_2_len)/2)
-        {
-          break;
-        }
-        k0 = 1 - (curr_jump_distance/sphere_2_len);
-        // compute collision
-        const float4 interpolated_sphere =
-        (k0)*loc_sphere_1 + (1 - k0) * loc_sphere_2;
-        query_location(0) = interpolated_sphere.x;
-        query_location(1) = interpolated_sphere.y;
-        query_location(2) = interpolated_sphere.z;
-        if (!nvblox::getVoxelAtPosition<nvblox::EsdfVoxel>(hashes[m], query_location, block_size,
-                                      &esdf_voxel) ||
-            !esdf_voxel->observed) {
-          // This voxel is outside of the map or not observed. 
-          curr_jump_distance += loc_sphere_1.w;// jump by sphere radius
-        } 
-        else 
-        {
-
-          compute_voxel_distance_grad(esdf_voxel, t_grad, 
-          signed_distance,
-          interpolated_sphere, eta, voxel_size, hashes[m], block_size);
-          // update jump distance:
-          curr_jump_distance += fabsf(signed_distance);
-          sum_grad += t_grad;
-        }
-      }
-    }
-
-    if (sum_grad.w > 0.0)
-    {
-      max_distance += sum_grad.w;
-
-      inv_transform_vec_quat_add(obb_pos, obb_quat,sum_grad, global_grad);
-    }
-  
-    
-  }
-
-
-  // sparsity opt:
-if (max_distance == 0) {
-    if (sparsity_idx[sph_idx] == 0) {
-      return;
-    }
-    sparsity_idx[sph_idx] = 0;
-    if (write_grad) {
-      *(float3 *)&out_grad[sph_idx * 4] = global_grad; // max_grad is all zeros
-    }
-    out_distance[sph_idx] = 0.0;
-    return;
-}
-if(enable_speed_metric)
-{
-
-
- if (sweep_back && sweep_fwd) {
-    const float dt = speed_dt[0];
-
-    scale_speed_metric(sphere_0_cache, sphere_1_cache, sphere_2_cache, dt,
-                       write_grad, max_distance, global_grad);
-  }
+template __global__ void sphereSweptTrajectoryDistanceCostMultiKernel<100>(
+	const float *sphere_pos_rad, 
+	float *out_distance,
+	float *out_grad,
+	uint8_t *sparsity_idx,
+	const float *weight,
+	const float *activation_distance,
+	const float *speed_dt,
+	nvblox::Index3DDeviceHashMapType<nvblox::EsdfBlock>* hashes,
+  const float *blox_pose,// pose of robot w.r.t nvblox world  origin w_T_rbase
+  const uint8_t *blox_enable,
+  const float *block_sizes,
+	const int batch_size, const int horizon, const int nspheres,
+	const int sweep_steps, const bool enable_speed_metric, 
+	const bool write_grad,
+  const int num_mappers);
 
 }
-
-  // else max_dist != 0
-  max_distance = weight[0] * max_distance;
-
-  if (write_grad) {
-    *(float3 *)&out_grad[sph_idx * 4] = weight[0] * global_grad;
-  }
-  out_distance[sph_idx] = max_distance;
-  sparsity_idx[sph_idx] = 1;
-
-}
-
-}
-
 }
 
 }

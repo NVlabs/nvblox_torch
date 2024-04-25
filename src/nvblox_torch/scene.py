@@ -14,7 +14,7 @@ from nvblox_torch.util_file import get_binary_path, join_path
 
 
 def get_nvblox_scene_class():
-    torch.classes.load_library(join_path(get_binary_path, "libpy_nvblox.so"))
+    torch.classes.load_library(join_path(get_binary_path(), "libpy_nvblox.so"))
     Scene = torch.classes.pynvblox.Scene
     return Scene
 

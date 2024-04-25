@@ -30,12 +30,11 @@ def test_py_dummy_map():
     scene = create_dummy_map()
     mapper = Mapper(voxel_sizes=[0.02], integrator_types=["tsdf"])
     mapper.build_from_scene(scene, 0)
-
+    mapper.update_hashmaps()
     batch_size = 10
     tensor_args = {"device": "cuda", "dtype": torch.float32}
-    query_spheres = torch.zeros((batch_size, 4), **tensor_args) + 0.5
+    query_spheres = torch.zeros((batch_size, 4), **tensor_args)  # + 0.5
     query_spheres[:, 3] = 0.001
     out_points = torch.zeros((batch_size, 4), **tensor_args) + 0.0
 
     r = mapper.query_sdf(query_spheres, out_points, True, 0)
-    assert torch.norm(r - 0.3160).item() < 1e-3

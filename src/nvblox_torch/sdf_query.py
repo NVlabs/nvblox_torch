@@ -64,12 +64,14 @@ class SdfSphereCostMultiBlox(torch.autograd.Function):
         sparsity_idx,
         weight,
         activation_distance,
+        max_esdf_distance,
         c_mapper,
         blox_pose,
         blox_enable,
         return_loss=False,
+        compute_esdf=False,
     ):
-        b, n, h, _ = sphere_position_rad.shape
+        b, h, n, _ = sphere_position_rad.shape
         r = c_mapper.query_sphere_sdf_cost(
             sphere_position_rad,
             out_distance,
@@ -77,12 +79,14 @@ class SdfSphereCostMultiBlox(torch.autograd.Function):
             sparsity_idx,
             weight,
             activation_distance,
+            max_esdf_distance,
             blox_pose,
             blox_enable,
             b,
             h,
             n,
-            True,
+            sphere_position_rad.requires_grad,
+            compute_esdf,
         )
         distance = r[0]
         ctx.return_loss = return_loss
@@ -96,7 +100,7 @@ class SdfSphereCostMultiBlox(torch.autograd.Function):
             grad_sph = r
             if ctx.return_loss:
                 grad_sph = grad_sph * grad_output
-        return grad_sph, None, None, None, None, None, None, None, None, None
+        return grad_sph, None, None, None, None, None, None, None, None, None, None, None
 
 
 class SdfSphereTrajectoryCostMultiBlox(torch.autograd.Function):
@@ -118,7 +122,7 @@ class SdfSphereTrajectoryCostMultiBlox(torch.autograd.Function):
         return_loss=False,
         use_experimental=False,
     ):
-        b, n, h, _ = sphere_position_rad.shape
+        b, h, n, _ = sphere_position_rad.shape
         r = c_mapper.query_sphere_trajectory_sdf_cost(
             sphere_position_rad,
             out_distance,
