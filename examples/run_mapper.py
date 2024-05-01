@@ -12,8 +12,8 @@ import argparse
 
 from torch.utils.data.dataloader import DataLoader
 
-import examples.demo_utils as demo_utils
-from examples.timer import Timer
+import demo_utils as demo_utils
+from timer import Timer
 from nvblox_torch.datasets.rtmv_dataset import RtmvDataset
 from nvblox_torch.datasets.sun3d_dataset import Sun3dDataset
 from nvblox_torch.mapper import (
